@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: civicpulse
+      POSTGRES_USER: civic
+      POSTGRES_PASSWORD: civic
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    ports: ["8000:8000"]
+    depends_on: [postgres, redis]
+    env_file: .env
+
+  ai_core:
+    build: ./services/ai_core
+    command: celery -A consumer worker --concurrency=4 -Q ai_core:process
+    depends_on: [redis]
+    env_file: .env
+    # No ports — pure queue consumer, no HTTP server
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    command: >
+      celery -A tasks worker --concurrency=4
+      -Q reports:process,ai_core:results,ai_core:failed
+    depends_on: [redis, postgres]
+    env_file: .env
+    # No ports — pure queue consumer
+
+  notifications:
+    build: ./services/notifications
+    depends_on: [redis]
+    env_file: .env
+    # No ports — pure pub-sub listener
+
+  frontend:
+    build: ./frontend
+    ports: ["5173:5173"]
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+
+volumes:
+  pgdata:
