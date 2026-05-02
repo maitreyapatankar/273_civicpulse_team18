@@ -69,6 +69,7 @@ def deduplicate(
     lat: float,
     lng: float,
     issue_type: str,
+    exclude_ids: set[str] | None = None,
 ) -> DedupResult:
     """Embed text, query Pinecone, and determine whether this report is a duplicate.
 
@@ -97,11 +98,16 @@ def deduplicate(
         include_metadata=True,
     )
 
-    if results.matches and results.matches[0].score > _COSINE_THRESHOLD:
-        return DedupResult(
-            is_duplicate=True,
-            master_ticket_id=results.matches[0].id,
-        )
+    exclude = exclude_ids or set()
+    if results.matches:
+        for match in results.matches:
+            if match.id in exclude:
+                continue
+            if match.score > _COSINE_THRESHOLD:
+                return DedupResult(
+                    is_duplicate=True,
+                    master_ticket_id=match.id,
+                )
 
     # ── exact upsert from ARCHITECTURE.md ─────────────────────────────────────
     index.upsert(vectors=[(

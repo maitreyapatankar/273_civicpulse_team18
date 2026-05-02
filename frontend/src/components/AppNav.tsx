@@ -43,26 +43,6 @@ export default function AppNav({ activeRole = 'public' }: AppNavProps) {
               >
                 Home
               </Link>
-              <Link
-                to={resolveRoleLink('citizen')}
-                className={`text-xs font-semibold px-3 py-1.5 rounded-full transition ${
-                  activeRole === 'citizen'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                Citizen
-              </Link>
-              <Link
-                to={resolveRoleLink('officer')}
-                className={`text-xs font-semibold px-3 py-1.5 rounded-full transition ${
-                  activeRole === 'officer'
-                    ? 'bg-cyan-700 text-white'
-                    : 'bg-cyan-50 text-cyan-900 hover:bg-cyan-100'
-                }`}
-              >
-                Officer
-              </Link>
             </div>
           </div>
         </div>

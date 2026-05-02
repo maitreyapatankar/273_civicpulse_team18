@@ -63,11 +63,19 @@ def process_report(self, report_id: str):
     """Fetch the raw report, mark it processing, forward payload to AI Core."""
     with get_db() as db:
         report = db.get(RawReport, report_id)
+        existing_ticket = (
+            db.query(Ticket)
+              .filter(Ticket.raw_report_id == report_id)
+              .first()
+        )
         report.status = "processing"
         db.commit()
         payload = report.to_dict()
 
     payload["attempt"] = 0
+    payload["is_edit"] = existing_ticket is not None
+    if existing_ticket:
+        payload["existing_ticket_id"] = str(existing_ticket.id)
     celery_app.send_task(
         "ai_core.consumer.run_pipeline",
         args=[report_id, payload],
@@ -82,14 +90,41 @@ def process_report(self, report_id: str):
 def handle_ai_result(report_id: str, enriched: dict):
     """Write enriched ticket to DB, mark report done, publish SMS notification."""
     with get_db() as db:
-        ticket = Ticket(**enriched, raw_report_id=report_id)
-        db.add(ticket)
+        existing = (
+            db.query(Ticket)
+              .filter(Ticket.raw_report_id == report_id)
+              .first()
+        )
+
+        duplicate_of = enriched.get("duplicate_of")
+        if duplicate_of and str(duplicate_of) in {str(report_id), str(existing.id) if existing else ""}:
+            duplicate_of = None
+
+        if existing:
+            existing.issue_type = enriched.get("issue_type")
+            existing.severity = enriched.get("severity")
+            existing.confidence = enriched.get("confidence")
+            existing.ai_reasoning = enriched.get("ai_reasoning")
+            existing.urgency_score = enriched.get("urgency_score")
+            existing.urgency_factors = enriched.get("urgency_factors")
+            existing.duplicate_of = duplicate_of
+            existing.work_order = enriched.get("work_order")
+            enriched_cluster = enriched.get("cluster_count") or 1
+            existing.cluster_count = max(existing.cluster_count or 1, enriched_cluster)
+            ticket_id = str(existing.id)
+        else:
+            enriched_copy = dict(enriched)
+            enriched_copy["duplicate_of"] = duplicate_of
+            ticket = Ticket(**enriched_copy, raw_report_id=report_id)
+            db.add(ticket)
+            ticket_id = str(ticket.id)
+
         db.query(RawReport).filter_by(id=report_id) \
             .update({"status": "done"})
         db.commit()
-        ticket_id = str(ticket.id)
 
-    _redis.publish("notify:ticket_ready", ticket_id)
+    if not existing:
+        _redis.publish("notify:ticket_ready", ticket_id)
 
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────

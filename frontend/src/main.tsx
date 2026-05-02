@@ -37,6 +37,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             }
           />
           <Route
+            path="/citizen/tickets/:ticketId"
+            element={
+              <CitizenRoute>
+                <CitizenDashboard />
+              </CitizenRoute>
+            }
+          />
+          <Route
             path="/officer/dashboard"
             element={
               <PrivateRoute>

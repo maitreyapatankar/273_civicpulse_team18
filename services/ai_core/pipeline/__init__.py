@@ -59,12 +59,20 @@ def run(payload: dict) -> dict:
     )
 
     # Step 3 — deduplication → DedupResult dataclass
+    exclude_ids: set[str] = set()
+    if payload.get("is_edit"):
+        exclude_ids.add(payload.get("report_id", ""))
+        existing_ticket_id = payload.get("existing_ticket_id")
+        if existing_ticket_id:
+            exclude_ids.add(existing_ticket_id)
+
     dedup_result = dedup.deduplicate(
         report_id=payload["report_id"],
         text=payload.get("text") or (image_desc or ""),
         lat=payload["lat"],
         lng=payload["lng"],
         issue_type=clf.issue_type,
+        exclude_ids=exclude_ids,
     )
 
     # S2 has no DB access — derive cluster_count from dedup outcome

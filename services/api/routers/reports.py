@@ -12,7 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, De
 
 from shared.db import get_db
 from shared.models import RawReport
-from routers.auth import optional_citizen_jwt
+from routers.auth import optional_citizen_jwt, require_citizen_jwt
 from schemas.report import ReportSubmitted
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -114,6 +114,57 @@ async def create_report(
 
     _enqueue(report_id)
     return ReportSubmitted(ticket_id=report_id, status="processing")
+
+
+# ── PATCH /reports/:id ───────────────────────────────────────────────────────
+
+@router.patch("/{report_id}", status_code=202, response_model=ReportSubmitted)
+async def update_report(
+    report_id: UUID,
+    text:           Optional[str]        = Form(None),
+    lat:            Optional[float]      = Form(None),
+    lng:            Optional[float]      = Form(None),
+    address:        Optional[str]        = Form(None),
+    image:          Optional[UploadFile] = File(None),
+    citizen:        dict                 = Depends(require_citizen_jwt),
+):
+    if not any([text, lat, lng, address, image]):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one field must be provided for update.",
+        )
+
+    with get_db() as db:
+        report = db.get(RawReport, report_id)
+        if not report or str(report.citizen_id) != citizen.get("sub"):
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        if text is not None:
+            report.text = text
+        if lat is not None:
+            report.lat = lat
+        if lng is not None:
+            report.lng = lng
+        if address is not None:
+            report.address = address
+
+        if image:
+            content = await image.read()
+            try:
+                report.image_url = _upload_to_s3(
+                    str(report.id),
+                    image.filename or "upload",
+                    content,
+                    image.content_type or "application/octet-stream",
+                )
+            except (BotoCoreError, ClientError) as exc:
+                raise HTTPException(status_code=502, detail=f"S3 upload failed: {exc}")
+
+        report.status = "queued"
+        db.commit()
+
+    _enqueue(str(report_id))
+    return ReportSubmitted(ticket_id=str(report_id), status="processing")
 
 
 # ── POST /reports/batch-csv ───────────────────────────────────────────────────

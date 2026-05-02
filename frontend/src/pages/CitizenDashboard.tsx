@@ -1,7 +1,8 @@
-import { FormEvent, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import api from '../api/client'
 import { CitizenTicketDetail, CitizenTicketSummary, ReportSubmitted } from '../api/types'
 import AppNav from '../components/AppNav'
@@ -22,7 +23,17 @@ function LocationPicker({ onPick }: { onPick: (lat: number, lng: number) => void
   return null
 }
 
+function MapRecenter({ center }: { center: [number, number] }) {
+  const map = useMap()
+  useEffect(() => {
+    map.setView(center, map.getZoom())
+  }, [center, map])
+  return null
+}
+
 export default function CitizenDashboard() {
+  const navigate = useNavigate()
+  const { ticketId } = useParams<{ ticketId: string }>()
   const [title, setTitle] = useState('')
   const [details, setDetails] = useState('')
   const [address, setAddress] = useState('')
@@ -35,7 +46,14 @@ export default function CitizenDashboard() {
   const [submitResult, setSubmitResult] = useState<ReportSubmitted | null>(null)
   const [addressLoading, setAddressLoading] = useState(false)
   const [addressError, setAddressError] = useState('')
+  const [searchingAddress, setSearchingAddress] = useState(false)
   const [selectedTicketId, setSelectedTicketId] = useState('')
+  const [editMode, setEditMode] = useState(false)
+  const [editNotes, setEditNotes] = useState('')
+  const [editMessage, setEditMessage] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
+  const [mapCenter, setMapCenter] = useState<[number, number]>([37.3387, -121.8853])
 
   const { data: tickets = [], isLoading: ticketsLoading } = useQuery<CitizenTicketSummary[]>({
     queryKey: ['citizen-tickets'],
@@ -60,9 +78,22 @@ export default function CitizenDashboard() {
       ? [parsedLat, parsedLng]
       : null
 
+  useEffect(() => {
+    if (ticketId) {
+      setSelectedTicketId(ticketId)
+    }
+  }, [ticketId])
+
+  useEffect(() => {
+    if (markerPosition) {
+      setMapCenter(markerPosition)
+    }
+  }, [markerPosition])
+
   async function handleMapPick(pickedLat: number, pickedLng: number) {
     setLat(pickedLat.toFixed(6))
     setLng(pickedLng.toFixed(6))
+    setMapCenter([pickedLat, pickedLng])
     setAddressError('')
     setAddressLoading(true)
 
@@ -105,6 +136,7 @@ export default function CitizenDashboard() {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setSubmitResult(data)
+      setSelectedTicketId(data.ticket_id)
       setTitle('')
       setDetails('')
       setAddress('')
@@ -112,10 +144,80 @@ export default function CitizenDashboard() {
       setLng('')
       setPhone('')
       setImage(null)
+      navigate(`/citizen/tickets/${data.ticket_id}`, { replace: true })
     } catch {
       setSubmitError('We could not submit your complaint. Please try again.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function handleAddressSearch() {
+    if (!address.trim()) {
+      setAddressError('Enter an address or postcode to search.')
+      return
+    }
+    setSearchingAddress(true)
+    setAddressError('')
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(address)}`,
+        { headers: { Accept: 'application/json' } }
+      )
+      if (!response.ok) {
+        throw new Error('search failed')
+      }
+      const results = await response.json()
+      if (Array.isArray(results) && results[0]) {
+        const foundLat = Number(results[0].lat)
+        const foundLng = Number(results[0].lon)
+        if (Number.isFinite(foundLat) && Number.isFinite(foundLng)) {
+          setLat(foundLat.toFixed(6))
+          setLng(foundLng.toFixed(6))
+          setMapCenter([foundLat, foundLng])
+        }
+      } else {
+        setAddressError('No results found for that address.')
+      }
+    } catch {
+      setAddressError('Unable to find that address. Please try again.')
+    } finally {
+      setSearchingAddress(false)
+    }
+  }
+
+  async function handleEditSave() {
+    if (!selectedTicketId) return
+    setEditSaving(true)
+    setEditError('')
+    setEditMessage('')
+
+    const formData = new FormData()
+    if (editNotes.trim()) {
+      formData.append('text', editNotes.trim())
+    }
+    if (lat) formData.append('lat', lat)
+    if (lng) formData.append('lng', lng)
+    if (address) formData.append('address', address)
+
+    if (!Array.from(formData.keys()).length) {
+      setEditError('Add at least one change before saving.')
+      setEditSaving(false)
+      return
+    }
+
+    try {
+      const { data } = await api.patch(`/reports/${selectedTicketId}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setEditMessage('Update submitted. We are reprocessing your report.')
+      setEditMode(false)
+      setSelectedTicketId(data.ticket_id)
+    } catch {
+      setEditError('Could not update the report. Please try again.')
+    } finally {
+      setEditSaving(false)
+      setTimeout(() => setEditMessage(''), 4000)
     }
   }
 
@@ -173,6 +275,14 @@ export default function CitizenDashboard() {
                     placeholder="Street or landmark"
                     className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
                   />
+                  <button
+                    type="button"
+                    onClick={handleAddressSearch}
+                    disabled={searchingAddress}
+                    className="mt-2 text-xs font-semibold text-cyan-700 hover:text-cyan-800 disabled:opacity-60"
+                  >
+                    {searchingAddress ? 'Searching…' : 'Find on map'}
+                  </button>
                 </div>
                 <div>
                   <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Photo (optional)</label>
@@ -213,7 +323,7 @@ export default function CitizenDashboard() {
                 <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Pick on map</label>
                 <div className="mt-2 h-48 rounded-2xl overflow-hidden border border-slate-200">
                   <MapContainer
-                    center={[37.7749, -122.4194]}
+                    center={mapCenter}
                     zoom={12}
                     style={{ height: '100%', width: '100%' }}
                     scrollWheelZoom={false}
@@ -222,6 +332,7 @@ export default function CitizenDashboard() {
                       url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                       attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                     />
+                    <MapRecenter center={mapCenter} />
                     <LocationPicker
                       onPick={handleMapPick}
                     />
@@ -263,13 +374,7 @@ export default function CitizenDashboard() {
             )}
             {submitResult && (
               <div className="mt-4 rounded-2xl border border-cyan-100 bg-cyan-50 px-4 py-3 text-sm text-cyan-800">
-                Complaint submitted. Ticket ID:{' '}
-                <Link
-                  to={`/track/${submitResult.ticket_id}`}
-                  className="font-semibold underline"
-                >
-                  {submitResult.ticket_id}
-                </Link>
+                Complaint submitted. Opening ticket details…
               </div>
             )}
           </form>
@@ -327,16 +432,54 @@ export default function CitizenDashboard() {
                 </h3>
                 <p className="text-sm text-slate-500 mt-1">{ticketDetail.address}</p>
               </div>
-              <span className="inline-flex items-center rounded-full bg-slate-900 text-white px-3 py-1 text-xs font-semibold">
-                {ticketDetail.status}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center rounded-full bg-slate-900 text-white px-3 py-1 text-xs font-semibold">
+                  {ticketDetail.status}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setEditMode((prev) => !prev)}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  {editMode ? 'Close edit' : 'Edit report'}
+                </button>
+              </div>
             </div>
             <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
               <div>
-                {ticketDetail.text && (
-                  <p className="text-sm text-slate-700 leading-relaxed">
-                    {ticketDetail.text}
-                  </p>
+                {editMode ? (
+                  <div className="space-y-3">
+                    <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                      Notes
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                      placeholder="Describe updates to your report"
+                      className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                    {editError && (
+                      <p className="text-xs text-rose-600">{editError}</p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleEditSave}
+                      disabled={editSaving}
+                      className="rounded-2xl bg-slate-900 text-white px-4 py-2 text-sm font-semibold hover:bg-slate-800 disabled:opacity-60"
+                    >
+                      {editSaving ? 'Saving…' : 'Save changes'}
+                    </button>
+                    {editMessage && (
+                      <p className="text-xs text-slate-500">{editMessage}</p>
+                    )}
+                  </div>
+                ) : (
+                  ticketDetail.text && (
+                    <p className="text-sm text-slate-700 leading-relaxed">
+                      {ticketDetail.text}
+                    </p>
+                  )
                 )}
                 {ticketDetail.image_url && (
                   <div className="mt-4 rounded-2xl overflow-hidden border border-slate-200">
@@ -365,6 +508,14 @@ export default function CitizenDashboard() {
                 <p className="text-xs text-slate-400 mt-4">
                   Updated {new Date(selectedTicket.updated_at).toLocaleString()}
                 </p>
+                {ticketDetail.ticket_id && (
+                  <Link
+                    to={`/track/${ticketDetail.ticket_id}`}
+                    className="mt-3 inline-flex text-xs font-semibold text-cyan-700 hover:text-cyan-800"
+                  >
+                    View public tracker
+                  </Link>
+                )}
               </div>
             </div>
           </div>
