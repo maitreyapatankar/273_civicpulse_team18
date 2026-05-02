@@ -151,17 +151,6 @@ async def admin_login(body: AdminLoginRequest):
         )
         return OfficerAuthResponse(access_token=token, role="admin", officer_id=None, email=None, name=body.username)
 
-    dispatcher_user = os.environ.get("DISPATCHER_USERNAME", "")
-    dispatcher_pass = os.environ.get("DISPATCHER_PASSWORD", "")
-    if dispatcher_user and dispatcher_pass:
-        if body.username == dispatcher_user and body.password == dispatcher_pass:
-            token = _issue_token(
-                os.environ["OFFICER_JWT_SECRET"],
-                subject=body.username,
-                role="officer",
-            )
-            return OfficerAuthResponse(access_token=token, role="officer", officer_id=None, email=None, name=body.username)
-
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid credentials",
@@ -228,6 +217,20 @@ async def citizen_login(body: CitizenLoginRequest):
 @router.post("/officer/login", response_model=OfficerAuthResponse)
 async def officer_login(body: OfficerLoginRequest):
     _ensure_password_length(body.password)
+    admin_user, admin_pass = _admin_credentials()
+    if body.email == "admin@gmail.com" and body.password == admin_pass:
+        token = _issue_token(
+            os.environ["OFFICER_JWT_SECRET"],
+            subject=body.email,
+            role="admin",
+        )
+        return OfficerAuthResponse(
+            access_token=token,
+            role="admin",
+            officer_id=None,
+            email=body.email,
+            name=admin_user,
+        )
     with get_db() as db:
         officer = db.query(Officer).filter(Officer.email == body.email).first()
         if not officer or not _verify_password(body.password, officer.password_hash):

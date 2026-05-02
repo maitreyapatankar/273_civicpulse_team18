@@ -28,8 +28,11 @@ curl http://localhost:8000/health
 |---------|-----|
 | API Gateway | http://localhost:8000 |
 | API Docs (Swagger) | http://localhost:8000/docs |
-| Dispatcher Login | http://localhost:5173/login |
-| Dispatcher Dashboard | http://localhost:5173/dashboard |
+| Landing | http://localhost:5173 |
+| Officer Login | http://localhost:5173/officer/login |
+| Officer Dashboard | http://localhost:5173/officer/dashboard |
+| Citizen Login | http://localhost:5173/citizen/login |
+| Citizen Dashboard | http://localhost:5173/citizen/dashboard |
 | Citizen Tracker | http://localhost:5173/track/{ticket_id} |
 
 ---
@@ -50,13 +53,16 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 
 | Variable | What it's used for |
 |----------|--------------------|
-| `JWT_SECRET` | Signs dispatcher login tokens (HS256). Any long random string — e.g. `openssl rand -hex 32`. |
-| `DISPATCHER_USERNAME` | Username for the dispatcher login page at `/login`. |
-| `DISPATCHER_PASSWORD` | Password paired with the username above. |
+| `OFFICER_JWT_SECRET` | JWT secret for officer/admin tokens (HS256). |
+| `CITIZEN_JWT_SECRET` | JWT secret for citizen tokens (HS256). |
+| `ADMIN_USERNAME` | Bootstrap admin username (default: `admin`). |
+| `ADMIN_PASSWORD` | Bootstrap admin password (default: `adminP`). |
 | `S3_BUCKET` | S3/R2 bucket where citizen-uploaded report photos are stored. |
 | `S3_REGION` | AWS region for the bucket. Default `us-east-1`. Change for Cloudflare R2. |
 | `AWS_ACCESS_KEY_ID` | AWS IAM credential with `s3:PutObject` on the bucket. |
 | `AWS_SECRET_ACCESS_KEY` | Paired secret for the IAM key above. |
+
+**Officer login shortcut:** `POST /auth/officer/login` accepts `admin@gmail.com` + `ADMIN_PASSWORD` and issues an admin-role token.
 
 > **Skipping image uploads?** Leave the four S3/AWS variables blank — reports without images still process. The API only calls S3 when a photo is attached.
 

@@ -33,9 +33,10 @@ civicpulse/
 │   ├── api/                    # Service 1 — FastAPI public gateway
 │   │   ├── main.py
 │   │   ├── routers/
-│   │   │   ├── reports.py      # POST /reports, POST /reports/batch-csv
-│   │   │   ├── tickets.py      # GET /tickets, GET /tickets/:id/status
-│   │   │   └── admin.py        # PATCH /tickets/:id/override
+│   │   │   ├── reports.py      # POST /reports, PATCH /reports/:id
+│   │   │   ├── tickets.py      # GET /tickets, GET /tickets/:id/status, GET /citizens/tickets
+│   │   │   ├── auth.py         # /auth/* (citizen + officer + admin)
+│   │   │   └── admin.py        # PATCH /tickets/:id (override + comments)
 │   │   ├── models/             # SQLAlchemy ORM models
 │   │   └── schemas/            # Pydantic request/response schemas
 │   ├── ai_core/                # Service 2 — pure Celery consumer, NO HTTP server
@@ -125,7 +126,7 @@ All inter-service communication flows through these named queues.
 3. S3 Worker — consumes reports:process
    - Fetch raw_report from Postgres
    - UPDATE raw_reports SET status = "processing"
-   - LPUSH ai_core:process {report_id, payload, attempt: 0}
+  - LPUSH ai_core:process {report_id, payload, attempt: 0}
         │
         ▼
 4. S2 AI Core — consumes ai_core:process
@@ -140,9 +141,9 @@ All inter-service communication flows through these named queues.
         │
         ▼
 5. S3 Worker — consumes ai_core:results
-   - INSERT tickets (enriched data)
-   - UPDATE raw_reports SET status = "done"
-   - PUBLISH notify:ticket_ready {ticket_id}
+  - INSERT tickets (new) OR UPDATE ticket (edit)
+  - UPDATE raw_reports SET status = "done"
+  - PUBLISH notify:ticket_ready {ticket_id} (new only)
 
    OR consumes ai_core:failed
    - attempt < 3 → re-LPUSH ai_core:process with exponential backoff
@@ -155,8 +156,8 @@ All inter-service communication flows through these named queues.
    - Twilio SMS → citizen
 
 7. S4 Frontend — polls S1 API
-   - Dispatcher: GET /tickets every 30s
-   - Citizen:    GET /tickets/:id/status every 10s until resolved
+  - Officer:  GET /tickets every 30s; GET /tickets/:id for detail
+  - Citizen:  GET /citizens/tickets + /citizens/tickets/:id
 ```
 
 ---
@@ -167,6 +168,7 @@ All inter-service communication flows through these named queues.
 -- Raw incoming reports (written by S1, read/updated by S3)
 CREATE TABLE raw_reports (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  citizen_id     UUID REFERENCES citizens(id),
   source         TEXT NOT NULL,          -- 'app' | 'csv' | 'api'
   text           TEXT,
   image_url      TEXT,                   -- S3/R2 object URL
@@ -198,6 +200,33 @@ CREATE TABLE tickets (
   created_at           TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE citizens (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name           TEXT NOT NULL,
+  email          TEXT UNIQUE NOT NULL,
+  password_hash  TEXT NOT NULL,
+  created_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE officers (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name           TEXT NOT NULL,
+  email          TEXT UNIQUE NOT NULL,
+  password_hash  TEXT NOT NULL,
+  role           TEXT NOT NULL DEFAULT 'officer',
+  created_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE ticket_comments (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id     UUID REFERENCES tickets(id),
+  author_type   TEXT NOT NULL,              -- officer | citizen
+  author_id     UUID,
+  message       TEXT NOT NULL,
+  is_public     BOOLEAN DEFAULT FALSE,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Indexes
 CREATE INDEX idx_tickets_urgency    ON tickets(urgency_score DESC);
 CREATE INDEX idx_raw_reports_status ON raw_reports(status);
@@ -216,11 +245,24 @@ No AI logic. Never waits for AI to complete — returns immediately after enqueu
 ### Endpoints
 
 ```
-POST   /reports               Submit report (text + optional image + GPS)
-POST   /reports/batch-csv     Bulk import from 311 CSV
-GET    /tickets               Paginated list, sorted by urgency_score DESC
-GET    /tickets/:id/status    Public status check (for citizen tracker + S5)
-PATCH  /tickets/:id           Dispatcher override (JWT auth required)
+POST   /auth/citizen/signup    Citizen signup (email + password)
+POST   /auth/citizen/login     Citizen login → JWT
+POST   /auth/officer/login     Officer login → JWT
+POST   /auth/officer/provision Admin-only officer provisioning
+POST   /auth/login             Bootstrap admin login (env-based)
+
+POST   /reports                Submit report (text + optional image + GPS)
+PATCH  /reports/:id            Edit report (re-queues pipeline)
+POST   /reports/batch-csv      Bulk import from 311 CSV
+
+GET    /tickets                Paginated list (officer/admin)
+GET    /tickets/:id            Ticket detail (officer/admin)
+GET    /tickets/:id/status     Public status check (citizen tracker + S5)
+PATCH  /tickets/:id            Officer override + department update
+
+GET    /citizens/tickets        List citizen reports
+GET    /citizens/tickets/:id    Citizen report detail + department updates
+
 GET    /health
 ```
 
@@ -237,9 +279,10 @@ Client
 
 ### Auth
 
-JWT (`HS256`, shared secret). Required on:
-- `PATCH /tickets/:id` (dispatcher override)
-- `GET /tickets` (dispatcher dashboard)
+JWT (`HS256`, separate secrets). Required on:
+- `POST /auth/officer/provision` (admin)
+- `GET /tickets`, `GET /tickets/:id`, `PATCH /tickets/:id` (officer/admin)
+- `GET /citizens/tickets`, `GET /citizens/tickets/:id` (citizen)
 
 Public (no auth):
 - `POST /reports`
@@ -254,7 +297,10 @@ S3_BUCKET=civicpulse-reports
 S3_REGION=us-east-1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
-JWT_SECRET=...
+OFFICER_JWT_SECRET=...
+CITIZEN_JWT_SECRET=...
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=adminP
 ```
 
 ---
