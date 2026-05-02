@@ -84,4 +84,68 @@ export interface TicketOverride {
   urgency_score?: number
   issue_type?:    IssueType
   notes?:         string
+  comment?:       string
+  is_public?:     boolean
+}
+
+export interface CitizenAuthResponse {
+  access_token: string
+  token_type: 'bearer'
+  role: 'citizen'
+  citizen_id: string
+  email: string
+  name: string
+}
+
+export interface OfficerAuthResponse {
+  access_token: string
+  token_type: 'bearer'
+  role: 'officer' | 'admin'
+  officer_id: string | null
+  email: string | null
+  name: string | null
+}
+
+export interface DepartmentUpdate {
+  id: string
+  message: string
+  created_at: string
+}
+
+export interface CitizenTicketSummary {
+  report_id: string
+  ticket_id: string | null
+  status: ReportStatus
+  issue_type: IssueType | null
+  urgency_score: number | null
+  address: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CitizenTicketDetail {
+  report_id: string
+  ticket_id: string | null
+  status: ReportStatus
+  text: string | null
+  image_url: string | null
+  address: string | null
+  lat: number
+  lng: number
+  issue_type: IssueType | null
+  urgency_score: number | null
+  department_updates: DepartmentUpdate[]
+}
+
+export interface TicketCommentResponse {
+  id: string
+  author_type: 'citizen' | 'officer'
+  author_id: string | null
+  message: string
+  is_public: boolean
+  created_at: string
+}
+
+export interface TicketDetailResponse extends Ticket {
+  comments: TicketCommentResponse[]
 }

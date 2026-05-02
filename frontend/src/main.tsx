@@ -1,11 +1,18 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import DispatcherDashboard from './pages/DispatcherDashboard'
 import CitizenTracker from './pages/CitizenTracker'
 import Login from './pages/Login'
-import PrivateRoute from './components/PrivateRoute'
+import PrivateRoute, { CitizenRoute } from './components/PrivateRoute'
+import Landing from './pages/Landing'
+import CitizenLogin from './pages/CitizenLogin'
+import CitizenSignup from './pages/CitizenSignup'
+import OfficerLogin from './pages/OfficerLogin'
+import OfficerSignup from './pages/OfficerSignup'
+import CitizenDashboard from './pages/CitizenDashboard'
+import 'leaflet/dist/leaflet.css'
 import './index.css'
 
 const queryClient = new QueryClient()
@@ -15,9 +22,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<Login />} />
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Navigate to="/officer/login" replace />} />
+          <Route path="/officer/login" element={<OfficerLogin />} />
+          <Route path="/officer/signup" element={<OfficerSignup />} />
+          <Route path="/citizen/login" element={<CitizenLogin />} />
+          <Route path="/citizen/signup" element={<CitizenSignup />} />
           <Route
-            path="/dashboard"
+            path="/citizen/dashboard"
+            element={
+              <CitizenRoute>
+                <CitizenDashboard />
+              </CitizenRoute>
+            }
+          />
+          <Route
+            path="/officer/dashboard"
             element={
               <PrivateRoute>
                 <DispatcherDashboard />
@@ -25,6 +45,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             }
           />
           <Route path="/track/:ticketId" element={<CitizenTracker />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

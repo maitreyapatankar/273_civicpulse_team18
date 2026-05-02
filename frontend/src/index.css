@@ -1,3 +1,37 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+	:root {
+		color-scheme: light;
+	}
+
+	body {
+		font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+		background: #f7f5f2;
+		color: #0f172a;
+	}
+}
+
+@layer components {
+	.font-display {
+		font-family: 'Fraunces', serif;
+	}
+
+	.bg-grid {
+		background-image:
+			radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.12) 1px, transparent 0),
+			radial-gradient(circle at 1px 1px, rgba(2, 132, 199, 0.16) 1px, transparent 0);
+		background-size: 26px 26px, 42px 42px;
+		background-position: 0 0, 10px 16px;
+	}
+
+	.glass-card {
+		background: rgba(255, 255, 255, 0.82);
+		backdrop-filter: blur(12px);
+		border: 1px solid rgba(15, 23, 42, 0.08);
+	}
+}

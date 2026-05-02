@@ -4,9 +4,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 
-from routers.tickets import require_jwt
+from routers.auth import require_officer_jwt
 from shared.db import get_db
-from shared.models import Ticket
+from shared.models import Ticket, TicketComment
 from schemas.ticket import TicketOverride, TicketResponse
 
 router = APIRouter(prefix="/tickets", tags=["admin"])
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/tickets", tags=["admin"])
 async def override_ticket(
     ticket_id: UUID,
     override:  TicketOverride,
-    payload:   dict = Depends(require_jwt),
+    payload:   dict = Depends(require_officer_jwt),
 ):
     with get_db() as db:
         ticket = db.get(Ticket, ticket_id)
@@ -37,6 +37,22 @@ async def override_ticket(
             work_order = dict(ticket.work_order or {})
             work_order["dispatcher_notes"] = override.notes
             ticket.work_order = work_order
+
+        if override.comment:
+            author_id = None
+            try:
+                author_id = UUID(str(payload.get("sub")))
+            except Exception:
+                author_id = None
+
+            comment = TicketComment(
+                ticket_id=ticket.id,
+                author_type="officer",
+                author_id=author_id,
+                message=override.comment,
+                is_public=True if override.is_public is None else bool(override.is_public),
+            )
+            db.add(comment)
 
         ticket.dispatcher_override = True
         ticket.override_by = payload.get("sub") or payload.get("username")

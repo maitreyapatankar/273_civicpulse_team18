@@ -1,46 +1,40 @@
-import os
 from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 
 from shared.db import get_db
-from shared.models import RawReport, Ticket
-from schemas.ticket import TicketResponse, TicketStatusResponse
+from shared.models import RawReport, Ticket, TicketComment
+from schemas.ticket import TicketResponse, TicketStatusResponse, TicketDetailResponse, TicketCommentResponse
+from schemas.citizen import CitizenTicketSummary, CitizenTicketDetail, DepartmentUpdate
+from routers.auth import require_officer_jwt, require_citizen_jwt
 
-router = APIRouter(prefix="/tickets", tags=["tickets"])
-
-_bearer = HTTPBearer()
+router = APIRouter(tags=["tickets"])
 
 
-def require_jwt(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
-) -> dict:
-    try:
-        return jwt.decode(
-            credentials.credentials,
-            os.environ["JWT_SECRET"],
-            algorithms=["HS256"],
-        )
-    except JWTError:
-        raise HTTPException(
-            status_code=http_status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+def _public_updates(db, ticket_id: UUID) -> list[DepartmentUpdate]:
+    rows = (
+        db.query(TicketComment)
+          .filter(TicketComment.ticket_id == ticket_id)
+          .filter(TicketComment.is_public.is_(True))
+          .order_by(TicketComment.created_at.asc())
+          .all()
+    )
+    return [
+        DepartmentUpdate(id=row.id, message=row.message, created_at=row.created_at)
+        for row in rows
+    ]
 
 
 # ── GET /tickets ──────────────────────────────────────────────────────────────
 
-@router.get("", response_model=List[TicketResponse])
+@router.get("/tickets", response_model=List[TicketResponse])
 async def list_tickets(
     status: str = "open",   # open | resolved | all
     page:   int = 1,
     limit:  int = 50,
-    _:      dict = Depends(require_jwt),
+    _:      dict = Depends(require_officer_jwt),
 ):
     with get_db() as db:
         q = db.query(Ticket)
@@ -62,7 +56,7 @@ async def list_tickets(
 
 # ── GET /tickets/:id/status ───────────────────────────────────────────────────
 
-@router.get("/{ticket_id}/status", response_model=TicketStatusResponse)
+@router.get("/tickets/{ticket_id}/status", response_model=TicketStatusResponse)
 async def get_ticket_status(ticket_id: UUID):
     with get_db() as db:
         # Citizen path: ticket_id is raw_report.id (returned by POST /reports)
@@ -91,4 +85,118 @@ async def get_ticket_status(ticket_id: UUID):
             cluster_count=ticket.cluster_count if ticket else 1,
             reporter_phone=raw_report.reporter_phone,
             created_at=raw_report.submitted_at,
+        )
+
+
+@router.get("/tickets/{ticket_id}", response_model=TicketDetailResponse)
+async def get_ticket_detail(
+    ticket_id: UUID,
+    _: dict = Depends(require_officer_jwt),
+):
+    with get_db() as db:
+        ticket = db.get(Ticket, ticket_id)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        comments = (
+            db.query(TicketComment)
+              .filter(TicketComment.ticket_id == ticket_id)
+              .order_by(TicketComment.created_at.asc())
+              .all()
+        )
+
+        return TicketDetailResponse(
+            **TicketResponse.model_validate(ticket).model_dump(),
+            comments=[TicketCommentResponse.model_validate(c) for c in comments],
+        )
+
+
+@router.get("/citizens/tickets", response_model=List[CitizenTicketSummary], tags=["citizens"])
+async def list_citizen_tickets(payload: dict = Depends(require_citizen_jwt)):
+    citizen_id = payload.get("sub")
+    if not citizen_id:
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+
+    with get_db() as db:
+        reports = (
+            db.query(RawReport)
+              .filter(RawReport.citizen_id == UUID(citizen_id))
+              .order_by(RawReport.submitted_at.desc())
+              .all()
+        )
+
+        summaries: list[CitizenTicketSummary] = []
+        for report in reports:
+            ticket = (
+                db.query(Ticket)
+                  .filter(Ticket.raw_report_id == report.id)
+                  .first()
+            )
+            last_update = report.submitted_at
+            if ticket:
+                latest_comment = (
+                    db.query(TicketComment)
+                      .filter(TicketComment.ticket_id == ticket.id)
+                      .filter(TicketComment.is_public.is_(True))
+                      .order_by(TicketComment.created_at.desc())
+                      .first()
+                )
+                if latest_comment:
+                    last_update = latest_comment.created_at
+
+            summaries.append(
+                CitizenTicketSummary(
+                    report_id=report.id,
+                    ticket_id=ticket.id if ticket else None,
+                    status=report.status,
+                    issue_type=ticket.issue_type if ticket else None,
+                    urgency_score=ticket.urgency_score if ticket else None,
+                    address=report.address,
+                    created_at=report.submitted_at,
+                    updated_at=last_update,
+                )
+            )
+
+        return summaries
+
+
+@router.get(
+    "/citizens/tickets/{ticket_id}",
+    response_model=CitizenTicketDetail,
+    tags=["citizens"],
+)
+async def get_citizen_ticket_detail(
+    ticket_id: UUID,
+    payload: dict = Depends(require_citizen_jwt),
+):
+    citizen_id = payload.get("sub")
+    if not citizen_id:
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+
+    with get_db() as db:
+        report = db.get(RawReport, ticket_id)
+        if not report or str(report.citizen_id) != citizen_id:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        ticket = (
+            db.query(Ticket)
+              .filter(Ticket.raw_report_id == report.id)
+              .first()
+        )
+        updates: list[DepartmentUpdate] = []
+        if ticket:
+            updates = _public_updates(db, ticket.id)
+
+        return CitizenTicketDetail(
+            report_id=report.id,
+            ticket_id=ticket.id if ticket else None,
+            status=report.status,
+            text=report.text,
+            image_url=report.image_url,
+            address=report.address,
+            lat=report.lat,
+            lng=report.lng,
+            issue_type=ticket.issue_type if ticket else None,
+            urgency_score=ticket.urgency_score if ticket else None,
+            department_updates=updates,
         )

@@ -17,6 +17,7 @@ class RawReport(Base):
     __tablename__ = "raw_reports"
 
     id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    citizen_id     = Column(UUID(as_uuid=True), ForeignKey("citizens.id"))
     source         = Column(Text, nullable=False)           # 'app' | 'csv' | 'api'
     text           = Column(Text)
     image_url      = Column(Text)                           # S3/R2 object URL
@@ -63,7 +64,41 @@ class Ticket(Base):
     created_at          = Column(TIMESTAMP(timezone=True), default=_now)
 
 
+class Citizen(Base):
+    __tablename__ = "citizens"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name          = Column(Text, nullable=False)
+    email         = Column(Text, nullable=False, unique=True)
+    password_hash = Column(Text, nullable=False)
+    created_at    = Column(TIMESTAMP(timezone=True), default=_now)
+
+
+class Officer(Base):
+    __tablename__ = "officers"
+
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name          = Column(Text, nullable=False)
+    email         = Column(Text, nullable=False, unique=True)
+    password_hash = Column(Text, nullable=False)
+    role          = Column(Text, nullable=False, default="officer")
+    created_at    = Column(TIMESTAMP(timezone=True), default=_now)
+
+
+class TicketComment(Base):
+    __tablename__ = "ticket_comments"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id   = Column(UUID(as_uuid=True), ForeignKey("tickets.id"), nullable=False)
+    author_type = Column(Text, nullable=False)  # citizen | officer
+    author_id   = Column(UUID(as_uuid=True))
+    message     = Column(Text, nullable=False)
+    is_public   = Column(Boolean, default=False)
+    created_at  = Column(TIMESTAMP(timezone=True), default=_now)
+
+
 # Indexes defined after classes so column references resolve correctly
 Index("idx_raw_reports_status", RawReport.status)
 Index("idx_tickets_urgency",    Ticket.urgency_score.desc())
 Index("idx_tickets_created",    Ticket.created_at.desc())
+Index("idx_ticket_comments_ticket", TicketComment.ticket_id)

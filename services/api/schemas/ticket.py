@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -49,3 +49,20 @@ class TicketOverride(BaseModel):
     urgency_score: Optional[float] = None   # 1.0-5.0
     issue_type:    Optional[str]   = None
     notes:         Optional[str]   = None
+    comment:       Optional[str]   = None
+    is_public:     Optional[bool]  = None
+
+
+class TicketCommentResponse(BaseModel):
+    id: UUID
+    author_type: str
+    author_id: Optional[UUID]
+    message: str
+    is_public: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TicketDetailResponse(TicketResponse):
+    comments: List[TicketCommentResponse]

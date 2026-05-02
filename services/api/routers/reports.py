@@ -8,10 +8,11 @@ from typing import Optional
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from celery import Celery
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
 
 from shared.db import get_db
 from shared.models import RawReport
+from routers.auth import optional_citizen_jwt
 from schemas.report import ReportSubmitted
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -65,6 +66,7 @@ async def create_report(
     reporter_phone: Optional[str]        = Form(None),
     source:         str                  = Form("app"),
     image:          Optional[UploadFile] = File(None),
+    citizen:        Optional[dict]       = Depends(optional_citizen_jwt),
 ):
     if not text and not image:
         raise HTTPException(
@@ -88,8 +90,16 @@ async def create_report(
             raise HTTPException(status_code=502, detail=f"S3 upload failed: {exc}")
 
     with get_db() as db:
+        citizen_id = None
+        if citizen:
+            try:
+                citizen_id = uuid.UUID(citizen.get("sub"))
+            except Exception:
+                citizen_id = None
+
         report = RawReport(
             id=uuid.UUID(report_id),
+            citizen_id=citizen_id,
             source=source,
             text=text,
             image_url=image_url,
