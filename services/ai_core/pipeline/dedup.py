@@ -24,13 +24,16 @@ import os
 import time
 from dataclasses import dataclass, field
 
-import openai
+from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone
 
-_EMBED_MODEL = "text-embedding-3-small"
-_GEO_RADIUS  = 0.005        # ≈ 500 m bounding box in degrees
-_DAYS_WINDOW = 30
+_EMBED_MODEL      = "all-MiniLM-L6-v2"   # 384-dim, runs locally — no API key needed
+_GEO_RADIUS       = 0.005        # ≈ 500 m bounding box in degrees
+_DAYS_WINDOW      = 30
 _COSINE_THRESHOLD = 0.88
+
+# Load once at import time; model is cached in the container after first download
+_embedder = SentenceTransformer(_EMBED_MODEL)
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -43,22 +46,14 @@ class DedupResult:
 
 # ── Internal helpers — not cached, keeps mocking simple in tests ──────────────
 
-def _make_openai_client() -> openai.OpenAI:
-    return openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-
 def _get_pinecone_index():
     pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
     return pc.Index(os.environ["PINECONE_INDEX"])
 
 
 def _embed(text: str) -> list[float]:
-    return (
-        _make_openai_client()
-        .embeddings.create(input=text, model=_EMBED_MODEL)
-        .data[0]
-        .embedding
-    )
+    """Embed text locally using sentence-transformers. No API call, no cost."""
+    return _embedder.encode(text, convert_to_numpy=True).tolist()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

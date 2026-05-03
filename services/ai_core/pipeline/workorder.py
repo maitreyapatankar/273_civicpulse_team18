@@ -20,13 +20,12 @@ generate(issue_type, severity, urgency_score, text)
 import json
 import os
 
-import anthropic
+from google import genai
+from google.genai import types
 
-# TODO: set your chosen model name
-WORKORDER_MODEL: str = "TODO"   # e.g. "claude-sonnet-4-5"
+WORKORDER_MODEL: str = "gemini-2.5-flash"
 
-# TODO: set the environment variable name that holds your Anthropic API key
-_API_KEY_ENV: str = "TODO"      # e.g. "ANTHROPIC_API_KEY"
+_API_KEY_ENV: str = "GEMINI_API_KEY"
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 # Architecture does not specify a work-order prompt; this prompt is designed to
@@ -57,8 +56,8 @@ Report text: "{text}" """
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _make_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=os.environ[_API_KEY_ENV])
+def _make_client() -> genai.Client:
+    return genai.Client(api_key=os.environ[_API_KEY_ENV])
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -90,16 +89,21 @@ def generate(
         text=text,
     )
 
-    message = _make_client().messages.create(
+    client = _make_client()
+    response = client.models.generate_content(
         model=WORKORDER_MODEL,
-        max_tokens=256,
-        system=_WORKORDER_SYSTEM,
-        messages=[{"role": "user", "content": user_content}],
+        contents=user_content,
+        config=types.GenerateContentConfig(
+            system_instruction=_WORKORDER_SYSTEM,
+        ),
     )
 
-    raw_text = message.content[0].text
+    raw_text = response.text
     try:
-        raw = json.loads(raw_text)
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        raw = json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Model returned invalid JSON: {raw_text!r}") from exc
 

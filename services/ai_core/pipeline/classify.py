@@ -20,14 +20,13 @@ import json
 import os
 from dataclasses import dataclass, field
 
-import anthropic
+from google import genai
+from google.genai import types
 
-# TODO: set your chosen model names here
-VISION_MODEL:   str = "TODO"   # e.g. "claude-haiku-4-5"
-CLASSIFY_MODEL: str = "TODO"   # e.g. "claude-sonnet-4-5"
+VISION_MODEL:   str = "gemini-2.5-flash"
+CLASSIFY_MODEL: str = "gemini-2.5-flash"
 
-# TODO: set the environment variable name that holds your Anthropic API key
-_API_KEY_ENV: str = "TODO"     # e.g. "ANTHROPIC_API_KEY"
+_API_KEY_ENV: str = "GEMINI_API_KEY"
 
 # ── Prompts — copied verbatim from ARCHITECTURE.md, do not modify ─────────────
 
@@ -64,8 +63,8 @@ class ClassificationResult:
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _make_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=os.environ[_API_KEY_ENV])
+def _make_client() -> genai.Client:
+    return genai.Client(api_key=os.environ[_API_KEY_ENV])
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -73,32 +72,29 @@ def _make_client() -> anthropic.Anthropic:
 def describe_image(image_url: str) -> str:
     """Return a one-paragraph description of road damage visible in the image.
 
-    Sends the image at image_url to the vision model.
+    Downloads the image and sends it inline to the vision model.
     The returned string is passed as image_desc to classify() in Step 2.
 
     Raises:
-        anthropic.APIError on API failure.
+        google.api_core.exceptions.GoogleAPIError on API failure.
     """
-    message = _make_client().messages.create(
+    image_bytes = _fetch_image_bytes(image_url)
+    client = _make_client()
+    response = client.models.generate_content(
         model=VISION_MODEL,
-        max_tokens=256,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "url", "url": image_url},
-                    },
-                    {
-                        "type": "text",
-                        "text": _VISION_PROMPT,
-                    },
-                ],
-            }
+        contents=[
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            _VISION_PROMPT,
         ],
     )
-    return message.content[0].text
+    return response.text
+
+
+def _fetch_image_bytes(url: str) -> bytes:
+    """Download image bytes from a URL for Gemini inline data."""
+    import urllib.request
+    with urllib.request.urlopen(url) as resp:  # noqa: S310
+        return resp.read()
 
 
 def classify(
@@ -108,16 +104,12 @@ def classify(
 ) -> ClassificationResult:
     """Classify the road issue using the language model.
 
-    Constructs the user prompt using the template from ARCHITECTURE.md,
-    calls the model, parses the JSON response, and sets needs_review when
-    confidence < 0.70.
-
     Returns:
         ClassificationResult
 
     Raises:
-        ValueError         if the model response is not valid JSON.
-        anthropic.APIError on API failure.
+        ValueError                              if the model response is not valid JSON.
+        google.api_core.exceptions.GoogleAPIError on API failure.
     """
     user_content = (
         f"Location: {address}\n"
@@ -125,16 +117,22 @@ def classify(
         f"{f'Image description: {image_desc}' if image_desc else ''}"
     )
 
-    message = _make_client().messages.create(
+    client = _make_client()
+    response = client.models.generate_content(
         model=CLASSIFY_MODEL,
-        max_tokens=256,
-        system=_CLASSIFY_SYSTEM,
-        messages=[{"role": "user", "content": user_content}],
+        contents=user_content,
+        config=types.GenerateContentConfig(
+            system_instruction=_CLASSIFY_SYSTEM,
+        ),
     )
 
-    raw_text = message.content[0].text
+    raw_text = response.text
     try:
-        raw = json.loads(raw_text)
+        # Strip markdown code fences if Gemini wraps the JSON
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        raw = json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Model returned invalid JSON: {raw_text!r}") from exc
 

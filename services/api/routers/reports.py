@@ -4,6 +4,7 @@ import os
 import uuid
 from functools import lru_cache
 from typing import Optional
+from uuid import UUID
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -48,10 +49,13 @@ def _upload_to_s3(report_id: str, filename: str, content: bytes, content_type: s
 
 
 def _enqueue(report_id: str) -> None:
+    """Enqueue a report for processing.
+    The worker listens on the `reports` queue, so we must route the task there.
+    """
     _celery().send_task(
         "worker.tasks.process_report",
         args=[report_id],
-        queue="reports:process",
+        queue="reports",
     )
 
 

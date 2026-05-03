@@ -35,7 +35,7 @@ services:
       dockerfile: services/worker/Dockerfile
     command: >
       celery -A tasks worker --concurrency=4
-      -Q reports:process,ai_core:results,ai_core:failed
+      -Q reports,ai_core:results,ai_core:failed
     depends_on: [redis, postgres]
     env_file: .env
     # No ports — pure queue consumer
