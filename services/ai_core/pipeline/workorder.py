@@ -79,8 +79,8 @@ def generate(
         }
 
     Raises:
-        anthropic.APIError if the API call fails.
-        ValueError         if the model response is not valid JSON.
+        google.api_core.exceptions.GoogleAPIError if the API call fails.
+        ValueError                                if the model response is not valid JSON.
     """
     user_content = _WORKORDER_USER_TMPL.format(
         issue_type=issue_type,

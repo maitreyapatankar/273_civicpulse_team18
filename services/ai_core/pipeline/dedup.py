@@ -1,10 +1,11 @@
 """
-Step 3 — Deduplication  (text-embedding-3-small → Pinecone ANN)
+Step 3 — Deduplication  (local sentence-transformers → Pinecone ANN)
 
 Checks whether the incoming report is a duplicate of an existing nearby ticket.
 
-Algorithm — copied verbatim from ARCHITECTURE.md, do not modify thresholds:
-1. Embed report text with OpenAI text-embedding-3-small (1536-dim).
+Algorithm — do not modify thresholds:
+1. Embed report text locally with sentence-transformers `all-MiniLM-L6-v2` (384-dim).
+   No external API call, no API key required for the embedding step.
 2. Query Pinecone with a geo bbox + 30-day epoch filter, top_k=5.
 3. cosine score > 0.88 on the top match → duplicate.
    Return DedupResult(is_duplicate=True, master_ticket_id=<existing tickets.id>).
@@ -15,9 +16,8 @@ ticket's vector already represents the cluster.
 
 Environment
 -----------
-    OPENAI_API_KEY    — embeddings only, no chat
     PINECONE_API_KEY
-    PINECONE_INDEX    — e.g. "civicpulse-reports"
+    PINECONE_INDEX    — e.g. "civicpulse-reports" (must be created at 384 dims, cosine)
 """
 
 import os
@@ -73,7 +73,6 @@ def deduplicate(
         DedupResult(is_duplicate=False, master_ticket_id=None)   — new; vector upserted
 
     Raises:
-        openai.APIError          on embedding failure.
         pinecone.PineconeException on index query or upsert failure.
     """
     vec   = _embed(text)

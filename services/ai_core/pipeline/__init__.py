@@ -25,7 +25,7 @@ Step execution order
 --------------------
 1. classify.describe_image  (vision model   — skipped if no image_url)
 2. classify.classify        (language model — returns ClassificationResult dataclass)
-3. dedup.deduplicate        (text-embedding-3-small → Pinecone ANN, returns DedupResult dataclass)
+3. dedup.deduplicate        (local all-MiniLM-L6-v2 embeddings → Pinecone ANN, returns DedupResult dataclass)
 4. urgency.score            (P1 keyword rule → LLM if no keyword match, returns dict)
 5. workorder.generate       (language model — returns dict)
 

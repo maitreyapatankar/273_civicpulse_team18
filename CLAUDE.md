@@ -1,4 +1,4 @@
-# CivicPulse — Claude Code Instructions
+# CivicPulse — Agent Instructions
 
 ## Ground Rules
 - **Ask before creating any file the user hasn't explicitly requested.**
@@ -36,21 +36,6 @@ All credentials go in **`.env`** (git-ignored, never committed).
 `.env.example` is the committed template — team members run `cp .env.example .env` then fill in their values.
 See `README.md → Required Credentials` for what each key does.
 
-## TODOs Still Requiring Input
-
-These constants are intentionally left as `"TODO"` — the user has not yet chosen models.
-Do not guess or fill them in without being asked.
-
-| File | Variable | Example value |
-|------|----------|---------------|
-| `services/ai_core/pipeline/classify.py` | `VISION_MODEL` | `"claude-haiku-4-5"` |
-| `services/ai_core/pipeline/classify.py` | `CLASSIFY_MODEL` | `"claude-sonnet-4-5"` |
-| `services/ai_core/pipeline/classify.py` | `_API_KEY_ENV` | `"ANTHROPIC_API_KEY"` |
-| `services/ai_core/pipeline/urgency.py` | `URGENCY_MODEL` | `"claude-sonnet-4-5"` |
-| `services/ai_core/pipeline/urgency.py` | `_API_KEY_ENV` | `"ANTHROPIC_API_KEY"` |
-| `services/ai_core/pipeline/workorder.py` | `WORKORDER_MODEL` | `"claude-sonnet-4-5"` |
-| `services/ai_core/pipeline/workorder.py` | `_API_KEY_ENV` | `"ANTHROPIC_API_KEY"` |
-
 ## Service Commands
 
 ```bash
@@ -85,8 +70,8 @@ services/api/routers/admin.py       PATCH /tickets/:id (JWT guarded)
 
 services/ai_core/consumer.py        run_pipeline Celery task (max_retries=0)
 services/ai_core/pipeline/__init__.py  pipeline.run(payload) → enriched dict
-services/ai_core/pipeline/classify.py  Anthropic vision + classification
-services/ai_core/pipeline/dedup.py     OpenAI embeddings + Pinecone ANN
+services/ai_core/pipeline/classify.py  Gemini 2.5 Flash vision + classification
+services/ai_core/pipeline/dedup.py     Local sentence-transformers embeddings + Pinecone ANN
 services/ai_core/pipeline/urgency.py   P1 keyword shortcut + LLM scoring
 services/ai_core/pipeline/workorder.py LLM work order generation
 

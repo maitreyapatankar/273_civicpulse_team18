@@ -76,9 +76,9 @@ civicpulse/
 | Web framework | FastAPI 0.110 | S1 only | Auto OpenAPI, async, Pydantic built-in |
 | Language | Python 3.11 | S1, S2, S3, S5 | One language across backend |
 | Async job queue | Celery 5 + Redis | S2, S3 | Both services are pure Celery consumers |
-| LLM — reasoning | claude-sonnet-4-5 | S2 | Best structured output for classify + score |
-| LLM — vision | claude-haiku-4-5 | S2 | 5x cheaper than Sonnet for image description |
-| Embeddings | text-embedding-3-small | S2 | Fast, cheap, 1536-dim, sufficient for dedup |
+| LLM — reasoning | gemini-2.5-flash | S2 | Single multimodal model for classify, score, and work order generation |
+| LLM — vision | gemini-2.5-flash | S2 | Same model handles image description in one call — no second key, no second client |
+| Embeddings | all-MiniLM-L6-v2 (sentence-transformers) | S2 | 384-dim, runs locally — no API key, zero cost per embedding |
 | Vector DB | Pinecone (free tier) | S2 | Managed, geo-filter support, zero infra |
 | ORM | SQLAlchemy 2 + Alembic | S1, S3 | Version-controlled migrations |
 | Primary DB | Postgres 15 | infra | JSONB for AI outputs, PostGIS-ready for Phase 2 |
@@ -130,11 +130,11 @@ All inter-service communication flows through these named queues.
         │
         ▼
 4. S2 AI Core — consumes ai_core:process
-   - Step 1: Image description  (claude-haiku-4-5, skip if no image)
-   - Step 2: Classification     (claude-sonnet-4-5 → structured JSON)
-   - Step 3: Deduplication      (text-embedding-3-small → Pinecone ANN)
-   - Step 4: Urgency scoring    (keyword rule first, then claude-sonnet-4-5)
-   - Step 5: Work order gen     (claude-sonnet-4-5)
+   - Step 1: Image description  (gemini-2.5-flash, skip if no image)
+   - Step 2: Classification     (gemini-2.5-flash → structured JSON)
+   - Step 3: Deduplication      (local all-MiniLM-L6-v2 → Pinecone ANN)
+   - Step 4: Urgency scoring    (keyword rule first, then gemini-2.5-flash)
+   - Step 5: Work order gen     (gemini-2.5-flash)
 
    On success → LPUSH ai_core:results {report_id, enriched_ticket}
    On failure → LPUSH ai_core:failed  {report_id, error, attempt}
@@ -350,19 +350,19 @@ payload: {report_id, text, image_url, lat, lng, address, attempt}
    │
    ▼
 Step 1 — Image description          (skip if no image_url)
-  Model  : claude-haiku-4-5 (vision)
+  Model  : gemini-2.5-flash (multimodal)
   Prompt : "Describe visible road damage in this photo. One paragraph."
   Output : image_desc string → appended to text context for Step 2
    │
    ▼
 Step 2 — Classification
-  Model  : claude-sonnet-4-5
+  Model  : gemini-2.5-flash
   Output : {issue_type, severity 1-5, confidence 0-1, reasoning}
   Gate   : confidence < 0.70 → flag ticket for human review
    │
    ▼
 Step 3 — Deduplication
-  Model  : text-embedding-3-small → Pinecone ANN
+  Model  : all-MiniLM-L6-v2 (sentence-transformers, 384-dim, local) → Pinecone ANN
   Filter : 500m geo bbox (lat ±0.005, lng ±0.005), last 30 days
   Match  : cosine > 0.88 → is_duplicate = true, set duplicate_of
            no match → upsert new vector to Pinecone
@@ -372,13 +372,13 @@ Step 4 — Urgency scoring
   First  : P1 keyword rule override (zero tokens)
            keywords: sinkhole, collapse, flooding, live wire, gas leak,
                      bridge, guardrail, car fell, ambulance blocked
-  Model  : claude-sonnet-4-5 (only if no keyword match)
+  Model  : gemini-2.5-flash (only if no keyword match)
   Output : {score 1-5, factors{safety_risk, traffic_impact,
             cluster_volume, days_open}, reasoning}
    │
    ▼
 Step 5 — Work order generation
-  Model  : claude-sonnet-4-5
+  Model  : gemini-2.5-flash
   Output : {crew_type, materials[], est_hours, notes}
    │
    ▼
@@ -441,9 +441,8 @@ Report text: "{text}" """
 ### Deduplication logic
 
 ```python
-vec = openai_client.embeddings.create(
-    input=report["text"], model="text-embedding-3-small"
-).data[0].embedding
+# Embed locally with sentence-transformers — no API call, no cost.
+vec = embedder.encode(report["text"], convert_to_numpy=True).tolist()
 
 results = index.query(
     vector=vec,
@@ -470,12 +469,12 @@ return DedupResult(is_duplicate=False)
 ### Environment variables
 
 ```env
-ANTHROPIC_API_KEY=...
-OPENAI_API_KEY=...       # embeddings only
+GEMINI_API_KEY=...
 PINECONE_API_KEY=...
-PINECONE_INDEX=civicpulse-reports
+PINECONE_INDEX=civicpulse-reports   # must be created at 384 dims, cosine
 REDIS_URL=redis://...
 # No DATABASE_URL — S2 never touches Postgres
+# No embedding API key — embeddings run locally via sentence-transformers
 ```
 
 ---
@@ -781,7 +780,8 @@ S4 Frontend ──REST HTTP──► S1 API Gateway (all reads, all writes via S
 | Confidence gate at 0.70 | Human review below threshold | Safe starting point; tune down as accuracy data accumulates |
 | P1 keyword override before LLM | Deterministic safety net | Zero latency, zero tokens, zero hallucination on safety-critical cases |
 | Dedup cosine threshold 0.88 | Pinecone similarity cutoff | 0.85 produces too many false positives |
-| Haiku for vision, Sonnet for reasoning | Task-appropriate models | Haiku is 5x cheaper for simple image-to-text; Sonnet for structured reasoning |
+| Gemini 2.5 Flash for all LLM steps | Single multimodal model | Same model handles vision + structured reasoning — one prompt style, one key, one client across all 4 LLM steps |
+| Local sentence-transformers for embeddings | all-MiniLM-L6-v2 (384-dim) | Zero per-embedding cost; no extra API key; small model fits in S2 container |
 | Monorepo | Single repo, multiple service folders | Shared models + one docker-compose + simpler CI for a 4-person team |
 | Pinecone free tier | Hosted vector DB for MVP | Zero infra; swap to self-hosted Qdrant in Phase 2 if cost grows |
 | S3 is sole DB writer | Single writer pattern | Avoids concurrent write conflicts between S2 and S3 |

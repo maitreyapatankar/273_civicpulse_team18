@@ -70,12 +70,11 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 
 | Variable | What it's used for |
 |----------|--------------------|
-| `ANTHROPIC_API_KEY` | All Claude calls: image description (Haiku), classification, urgency scoring, work order generation (Sonnet). |
-| `OPENAI_API_KEY` | `text-embedding-3-small` embeddings used by the deduplication step. |
+| `GEMINI_API_KEY` | All LLM calls: image description, classification, urgency scoring, work order generation. Get one free at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). |
 | `PINECONE_API_KEY` | Reads and writes to the Pinecone vector index for dedup ANN search. |
-| `PINECONE_INDEX` | Name of the Pinecone index. Default `civicpulse-reports` — create it in the Pinecone console (1536 dims, cosine) before first run. |
+| `PINECONE_INDEX` | Name of the Pinecone index. Default `civicpulse-reports` — create it in the Pinecone console (384 dims, cosine) before first run. |
 
-> **AI Core model names** are also still set to `"TODO"` in the pipeline files — see `CLAUDE.md → TODOs Still Requiring Input` for the exact locations.
+> Embeddings for deduplication are computed locally with `sentence-transformers all-MiniLM-L6-v2` — no embedding API key required.
 
 ### Service 5 — Notifications
 
@@ -91,22 +90,19 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 
 ## Known Gaps — Teammate Handoff Notes
 
-### 1. AI Core model names are `"TODO"`
-The pipeline won't run until these are filled in. See `CLAUDE.md → TODOs Still Requiring Input` for the exact file locations.
-
-### 2. `frontend/package-lock.json` is not committed
+### 1. `frontend/package-lock.json` is not committed
 Run `npm install` inside `frontend/` once locally to generate it, then commit the lock file. Without it Docker builds are not reproducible.
 
-### 3. Pinecone index must be created manually
-Before S2 AI Core can deduplicate, create a free-tier index named `civicpulse-reports` in the Pinecone console (dimensions: `1536`, metric: `cosine`). Then set `PINECONE_INDEX=civicpulse-reports` in `.env`.
+### 2. Pinecone index must be created manually
+Before S2 AI Core can deduplicate, create a free-tier index named `civicpulse-reports` in the Pinecone console (dimensions: `384`, metric: `cosine`). Then set `PINECONE_INDEX=civicpulse-reports` in `.env`.
 
-### 4. S5 Notifications crashes without Twilio credentials
+### 3. S5 Notifications crashes without Twilio credentials
 Start everything except notifications if you haven't set up Twilio yet:
 ```bash
 docker compose up postgres redis api ai_core worker frontend
 ```
 
-### 5. `services/ai_core/prompts/` directory is empty
+### 4. `services/ai_core/prompts/` directory is empty
 The architecture reserves it for prompt template files. Currently all prompts are inline in the Python files. Moving them there is optional cleanup.
 
 ---

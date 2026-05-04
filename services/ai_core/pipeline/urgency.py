@@ -113,8 +113,8 @@ def score(
         }
 
     Raises:
-        anthropic.APIError if LLM scoring is triggered and the API fails.
-        ValueError         if the model response is not valid JSON.
+        google.api_core.exceptions.GoogleAPIError if LLM scoring is triggered and the API fails.
+        ValueError                                if the model response is not valid JSON.
     """
     if _is_p1(text):
         return _P1_RESULT
