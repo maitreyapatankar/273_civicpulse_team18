@@ -33,4 +33,7 @@ class CitizenTicketDetail(BaseModel):
     lng: float
     issue_type: Optional[str]
     urgency_score: Optional[float]
+    assigned_to: Optional[str] = None
+    assigned_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
     department_updates: List[DepartmentUpdate]

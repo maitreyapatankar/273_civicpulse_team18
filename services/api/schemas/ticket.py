@@ -21,8 +21,16 @@ class TicketResponse(BaseModel):
     dispatcher_override: bool = False
     override_by:         Optional[str]
     override_at:         Optional[datetime]
+    assigned_at:         Optional[datetime]
+    assigned_to:         Optional[str]
     resolved_at:         Optional[datetime]
     created_at:          datetime
+    # Derived lifecycle status — open|in_progress|resolved|failed (or pre-AI: queued|processing)
+    lifecycle_status:    Optional[str]   = None
+    # Pulled from raw_reports for the dispatcher map
+    lat:                 Optional[float] = None
+    lng:                 Optional[float] = None
+    address:             Optional[str]   = None
 
     model_config = {"from_attributes": True}
 
@@ -31,15 +39,21 @@ class TicketStatusResponse(BaseModel):
     """Public status check — returned by GET /tickets/:id/status.
 
     Also consumed by S5 Notifications to obtain reporter_phone.
+
+    `status` is the derived lifecycle state shown to the citizen:
+        queued | processing | open | in_progress | resolved | failed
     """
-    id:            UUID
-    status:        str                   # queued|processing|done|failed
-    issue_type:    Optional[str]
-    urgency_score: Optional[float]
-    duplicate_of:  Optional[UUID]
-    cluster_count: int = 1
-    reporter_phone: Optional[str]        # needed by S5; omit in public docs
-    created_at:    datetime
+    id:             UUID
+    status:         str
+    issue_type:     Optional[str]
+    urgency_score:  Optional[float]
+    duplicate_of:   Optional[UUID]
+    cluster_count:  int = 1
+    reporter_phone: Optional[str]
+    assigned_to:    Optional[str] = None
+    assigned_at:    Optional[datetime] = None
+    resolved_at:    Optional[datetime] = None
+    created_at:     datetime
 
     model_config = {"from_attributes": True}
 
@@ -51,6 +65,8 @@ class TicketOverride(BaseModel):
     notes:         Optional[str]   = None
     comment:       Optional[str]   = None
     is_public:     Optional[bool]  = None
+    assign_to:     Optional[str]   = None   # crew name / id; sets assigned_at = now()
+    resolve:       Optional[bool]  = None   # true → sets resolved_at = now()
 
 
 class TicketCommentResponse(BaseModel):
