@@ -60,6 +60,8 @@ class Ticket(Base):
     dispatcher_override = Column(Boolean, default=False)
     override_by         = Column(Text)
     override_at         = Column(TIMESTAMP(timezone=True))
+    assigned_at         = Column(TIMESTAMP(timezone=True))
+    assigned_to         = Column(Text)
     resolved_at         = Column(TIMESTAMP(timezone=True))
     created_at          = Column(TIMESTAMP(timezone=True), default=_now)
 
