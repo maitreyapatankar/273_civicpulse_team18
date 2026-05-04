@@ -8,7 +8,13 @@ export type IssueType =
   | 'sign_damage'
   | 'other'
 
-export type ReportStatus = 'queued' | 'processing' | 'done' | 'failed'
+export type ReportStatus =
+  | 'queued'
+  | 'processing'
+  | 'open'
+  | 'in_progress'
+  | 'resolved'
+  | 'failed'
 
 // ── JSONB sub-shapes ──────────────────────────────────────────────────────────
 
@@ -59,7 +65,13 @@ export interface Ticket {
   dispatcher_override:  boolean
   override_by:          string | null
   override_at:          string | null     // ISO 8601
+  assigned_at:          string | null
+  assigned_to:          string | null
   resolved_at:          string | null
+  lifecycle_status:     'open' | 'in_progress' | 'resolved' | 'failed' | null
+  lat:                  number | null
+  lng:                  number | null
+  address:              string | null
   created_at:           string
 }
 
@@ -72,6 +84,9 @@ export interface TicketStatusResponse {
   urgency_score: number | null
   duplicate_of:  string | null
   cluster_count: number
+  assigned_to:   string | null
+  assigned_at:   string | null
+  resolved_at:   string | null
   created_at:    string
 }
 
@@ -82,10 +97,12 @@ export interface ReportSubmitted {
 
 export interface TicketOverride {
   urgency_score?: number
-  issue_type?:    IssueType
+  issue_type?:    IssueType | string
   notes?:         string
   comment?:       string
   is_public?:     boolean
+  assign_to?:     string
+  resolve?:       boolean
 }
 
 export interface CitizenAuthResponse {
@@ -134,6 +151,9 @@ export interface CitizenTicketDetail {
   lng: number
   issue_type: IssueType | null
   urgency_score: number | null
+  assigned_to: string | null
+  assigned_at: string | null
+  resolved_at: string | null
   department_updates: DepartmentUpdate[]
 }
 

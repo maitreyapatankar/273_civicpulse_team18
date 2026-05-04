@@ -5,6 +5,7 @@ import L from 'leaflet'
 import api from '../api/client'
 import { TicketDetailResponse, TicketOverride } from '../api/types'
 import AppNav from '../components/AppNav'
+import { useTicketStream } from '../hooks/useTicketStream'
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -37,7 +38,10 @@ interface Ticket {
   } | null
   dispatcher_override: boolean
   override_by: string | null
+  assigned_at: string | null
+  assigned_to: string | null
   resolved_at: string | null
+  lifecycle_status: 'open' | 'in_progress' | 'resolved' | 'failed' | null
   created_at: string
   lat: number
   lng: number
@@ -107,17 +111,32 @@ export default function DispatcherDashboard() {
   const [search, setSearch] = useState('')
   const [comment, setComment] = useState('')
   const [isPublic, setIsPublic] = useState(DEFAULT_PUBLIC_UPDATE)
+  const [crewName, setCrewName] = useState('')
+  const [assignSaved, setAssignSaved] = useState(false)
+  const [resolveSaved, setResolveSaved] = useState(false)
+
+  const officerToken = typeof window === 'undefined' ? '' : (localStorage.getItem('jwt_token') || '')
 
   const { data: tickets = [], isLoading, isError } = useQuery<Ticket[]>({
     queryKey: ['tickets'],
     queryFn: () => api.get('/tickets?status=open&sort=urgency_score').then((r) => r.data),
-    refetchInterval: 30_000,
+    // SSE pushes updates instantly; this poll is a safety net only.
+    refetchInterval: 5 * 60_000,
   })
 
   const detailQuery = useQuery<TicketDetailResponse>({
     queryKey: ['ticket-detail', selected?.id],
     queryFn: () => api.get(`/tickets/${selected?.id}`).then((r) => r.data),
     enabled: Boolean(selected?.id),
+  })
+
+  useTicketStream({
+    path: `/events/officer?token=${encodeURIComponent(officerToken)}`,
+    enabled: Boolean(officerToken),
+    onEvent: () => {
+      queryClient.invalidateQueries({ queryKey: ['tickets'] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-detail'] })
+    },
   })
 
   const mutation = useMutation({
@@ -132,6 +151,36 @@ export default function DispatcherDashboard() {
       setTimeout(() => setOverrideSaved(false), 3_000)
       setComment('')
       setIsPublic(DEFAULT_PUBLIC_UPDATE)
+      queryClient.invalidateQueries({ queryKey: ['ticket-detail'] })
+    },
+  })
+
+  const assignMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: TicketOverride }) =>
+      api.patch(`/tickets/${id}`, payload).then((r) => r.data),
+    onSuccess: (updated: Ticket) => {
+      queryClient.setQueryData<Ticket[]>(['tickets'], (prev = []) =>
+        prev.map((t) => (t.id === updated.id ? updated : t))
+      )
+      setSelected(updated)
+      setAssignSaved(true)
+      setTimeout(() => setAssignSaved(false), 3_000)
+      setCrewName('')
+      queryClient.invalidateQueries({ queryKey: ['ticket-detail'] })
+    },
+  })
+
+  const resolveMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      api.patch(`/tickets/${id}`, { resolve: true } as TicketOverride).then((r) => r.data),
+    onSuccess: (updated: Ticket) => {
+      queryClient.setQueryData<Ticket[]>(['tickets'], (prev = []) =>
+        prev.filter((t) => t.id !== updated.id)
+      )
+      setSelected(updated)
+      setResolveSaved(true)
+      setTimeout(() => setResolveSaved(false), 3_000)
+      queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket-detail'] })
     },
   })
@@ -169,6 +218,28 @@ export default function DispatcherDashboard() {
         is_public: comment ? isPublic : undefined,
       },
     })
+  }
+
+  function handleAssign() {
+    if (!selected || !crewName.trim()) return
+    assignMutation.mutate({
+      id: selected.id,
+      payload: { assign_to: crewName.trim() },
+    })
+  }
+
+  function handleResolve() {
+    if (!selected) return
+    resolveMutation.mutate({ id: selected.id })
+  }
+
+  function lifecycleBadge(status: string | null | undefined): { label: string; classes: string } {
+    switch (status) {
+      case 'in_progress': return { label: 'In Progress', classes: 'bg-indigo-100 text-indigo-800' }
+      case 'resolved':    return { label: 'Resolved',    classes: 'bg-emerald-100 text-emerald-800' }
+      case 'failed':      return { label: 'Failed',      classes: 'bg-rose-100 text-rose-700' }
+      default:            return { label: 'Open',        classes: 'bg-amber-100 text-amber-800' }
+    }
   }
 
   return (
@@ -331,6 +402,16 @@ export default function DispatcherDashboard() {
                     </span>
                   )}
                 </p>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 font-semibold ${lifecycleBadge(selected.lifecycle_status).classes}`}>
+                    {lifecycleBadge(selected.lifecycle_status).label}
+                  </span>
+                  {selected.assigned_to && (
+                    <span className="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2.5 py-0.5 font-medium">
+                      Crew: {selected.assigned_to}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="h-[220px] rounded-2xl overflow-hidden border border-slate-200">
@@ -501,22 +582,60 @@ export default function DispatcherDashboard() {
 
               <div className="rounded-2xl border border-slate-200 bg-white p-4">
                 <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em] mb-3">
-                  Quick actions
+                  Crew assignment
                 </h3>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <button className="rounded-2xl bg-slate-900 text-white text-sm font-semibold py-2.5 hover:bg-slate-800 transition">
-                    Assign crew
-                  </button>
-                  <button className="rounded-2xl border border-slate-200 text-sm font-semibold py-2.5 text-slate-700 hover:bg-slate-50 transition">
-                    Request follow-up
-                  </button>
-                  <button className="rounded-2xl border border-cyan-200 text-sm font-semibold py-2.5 text-cyan-900 hover:bg-cyan-50 transition">
-                    Notify citizen
-                  </button>
-                  <button className="rounded-2xl border border-amber-200 text-sm font-semibold py-2.5 text-amber-800 hover:bg-amber-50 transition">
-                    Escalate ticket
-                  </button>
+                <div className="space-y-3">
+                  <input
+                    value={crewName}
+                    onChange={(e) => setCrewName(e.target.value)}
+                    placeholder={selected.assigned_to ?? 'e.g. Crew Alpha / Pothole Team 3'}
+                    className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleAssign}
+                      disabled={assignMutation.isPending || !crewName.trim()}
+                      className="flex-1 rounded-2xl bg-slate-900 text-white text-sm font-semibold py-2.5 hover:bg-slate-800 disabled:opacity-50 transition"
+                    >
+                      {assignMutation.isPending ? 'Assigning…' : selected.assigned_to ? 'Reassign crew' : 'Assign crew'}
+                    </button>
+                    {assignSaved && (
+                      <span className="text-emerald-600 text-sm font-medium">Saved</span>
+                    )}
+                  </div>
+                  {assignMutation.isError && (
+                    <p className="text-xs text-rose-500">Could not assign crew. Try again.</p>
+                  )}
                 </div>
+              </div>
+
+              <div className="rounded-2xl border border-emerald-200 bg-white p-4">
+                <h3 className="text-xs font-semibold text-emerald-700 uppercase tracking-[0.2em] mb-3">
+                  Resolution
+                </h3>
+                <p className="text-xs text-slate-500 mb-3">
+                  Mark as resolved when the crew confirms the work is complete. The
+                  citizen sees the update instantly and gets an SMS.
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleResolve}
+                    disabled={resolveMutation.isPending || Boolean(selected.resolved_at)}
+                    className="flex-1 rounded-2xl bg-emerald-600 text-white text-sm font-semibold py-2.5 hover:bg-emerald-700 disabled:opacity-50 transition"
+                  >
+                    {selected.resolved_at
+                      ? 'Already resolved'
+                      : resolveMutation.isPending
+                      ? 'Resolving…'
+                      : 'Mark resolved'}
+                  </button>
+                  {resolveSaved && (
+                    <span className="text-emerald-600 text-sm font-medium">Saved</span>
+                  )}
+                </div>
+                {resolveMutation.isError && (
+                  <p className="text-xs text-rose-500 mt-2">Could not resolve ticket. Try again.</p>
+                )}
               </div>
             </div>
           )}

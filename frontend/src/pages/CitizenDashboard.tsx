@@ -1,11 +1,12 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import api from '../api/client'
 import { CitizenTicketDetail, CitizenTicketSummary, ReportSubmitted } from '../api/types'
 import AppNav from '../components/AppNav'
+import { useTicketStream } from '../hooks/useTicketStream'
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -33,6 +34,7 @@ function MapRecenter({ center }: { center: [number, number] }) {
 
 export default function CitizenDashboard() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { ticketId } = useParams<{ ticketId: string }>()
   const [title, setTitle] = useState('')
   const [details, setDetails] = useState('')
@@ -83,6 +85,15 @@ export default function CitizenDashboard() {
       setSelectedTicketId(ticketId)
     }
   }, [ticketId])
+
+  useTicketStream({
+    path: `/events/citizen/${selectedTicketId}`,
+    enabled: Boolean(selectedTicketId),
+    onEvent: () => {
+      queryClient.invalidateQueries({ queryKey: ['citizen-tickets'] })
+      queryClient.invalidateQueries({ queryKey: ['citizen-ticket', selectedTicketId] })
+    },
+  })
 
   useEffect(() => {
     if (markerPosition) {

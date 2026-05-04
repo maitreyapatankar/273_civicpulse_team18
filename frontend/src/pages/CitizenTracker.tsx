@@ -1,28 +1,31 @@
 import { useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import AppNav from '../components/AppNav'
+import { useTicketStream } from '../hooks/useTicketStream'
 
 interface StatusResponse {
   id: string
-  status: 'queued' | 'processing' | 'open' | 'done' | 'resolved' | 'failed'
+  status: 'queued' | 'processing' | 'open' | 'in_progress' | 'resolved' | 'failed'
   issue_type: string | null
   urgency_score: number | null
   duplicate_of: string | null
   cluster_count: number
-  created_at: string
+  assigned_to: string | null
+  assigned_at: string | null
   resolved_at: string | null
+  created_at: string
 }
 
-const TERMINAL = new Set(['done', 'resolved', 'failed'])
+const TERMINAL = new Set(['resolved', 'failed'])
 
 const STATUS_META: Record<string, { label: string; classes: string; description: string }> = {
-  queued:     { label: 'In Queue',         classes: 'bg-slate-100 text-slate-600',   description: "We've received your report and it's waiting to be processed." },
-  processing: { label: 'Processing',       classes: 'bg-cyan-100 text-cyan-800',    description: 'Our AI is analyzing your report now.' },
-  open:       { label: 'Under Review',     classes: 'bg-amber-100 text-amber-800',  description: 'A dispatcher is reviewing your report.' },
-  done:       { label: 'Resolved',         classes: 'bg-emerald-100 text-emerald-800', description: 'This issue has been resolved. Thank you for reporting it!' },
-  resolved:   { label: 'Resolved',         classes: 'bg-emerald-100 text-emerald-800', description: 'This issue has been resolved. Thank you for reporting it!' },
-  failed:     { label: 'Could Not Process', classes: 'bg-rose-100 text-rose-700',     description: 'We had trouble processing your report. Please try submitting again.' },
+  queued:      { label: 'In Queue',         classes: 'bg-slate-100 text-slate-600',     description: "We've received your report and it's waiting to be processed." },
+  processing:  { label: 'Processing',       classes: 'bg-cyan-100 text-cyan-800',       description: 'Our AI is analyzing your report now.' },
+  open:        { label: 'Under Review',     classes: 'bg-amber-100 text-amber-800',     description: 'A dispatcher is reviewing your report.' },
+  in_progress: { label: 'In Progress',      classes: 'bg-indigo-100 text-indigo-800',   description: 'A crew has been dispatched. Work is underway.' },
+  resolved:    { label: 'Resolved',         classes: 'bg-emerald-100 text-emerald-800', description: 'This issue has been resolved. Thank you for reporting it!' },
+  failed:      { label: 'Could Not Process', classes: 'bg-rose-100 text-rose-700',      description: 'We had trouble processing your report. Please try submitting again.' },
 }
 
 function formatDate(iso: string): string {
@@ -34,13 +37,23 @@ function formatDate(iso: string): string {
 
 export default function CitizenTracker() {
   const { ticketId } = useParams<{ ticketId: string }>()
+  const queryClient = useQueryClient()
 
   const { data, isLoading, isError } = useQuery<StatusResponse>({
     queryKey: ['ticket-status', ticketId],
     queryFn: () => api.get(`/tickets/${ticketId}/status`).then((r) => r.data),
+    // Long-poll fallback in case SSE is blocked by a proxy.
     refetchInterval: (query) =>
-      TERMINAL.has(query.state.data?.status ?? '') ? false : 10_000,
+      TERMINAL.has(query.state.data?.status ?? '') ? false : 60_000,
     enabled: Boolean(ticketId),
+  })
+
+  useTicketStream({
+    path: `/events/citizen/${ticketId ?? ''}`,
+    enabled: Boolean(ticketId) && !TERMINAL.has(data?.status ?? ''),
+    onEvent: () => {
+      queryClient.invalidateQueries({ queryKey: ['ticket-status', ticketId] })
+    },
   })
 
   return (
@@ -70,7 +83,7 @@ export default function CitizenTracker() {
 
         {data && (() => {
           const meta = STATUS_META[data.status] ?? STATUS_META['queued']
-          const isResolved = TERMINAL.has(data.status) && data.status !== 'failed'
+          const isResolved = data.status === 'resolved'
           return (
             <div className="glass-card rounded-2xl shadow-sm overflow-hidden">
               {/* Status band */}
@@ -112,6 +125,19 @@ export default function CitizenTracker() {
                   </div>
                 )}
 
+                {/* Crew assignment */}
+                {data.assigned_to && (
+                  <div>
+                    <p className="text-xs text-slate-500 uppercase tracking-wide font-medium mb-0.5">
+                      Assigned crew
+                    </p>
+                    <p className="text-slate-700 text-sm">{data.assigned_to}</p>
+                    {data.assigned_at && (
+                      <p className="text-xs text-slate-400">{formatDate(data.assigned_at)}</p>
+                    )}
+                  </div>
+                )}
+
                 {/* Timeline */}
                 <div>
                   <p className="text-xs text-slate-500 uppercase tracking-wide font-medium mb-0.5">
@@ -132,7 +158,7 @@ export default function CitizenTracker() {
                 {/* Auto-refresh notice */}
                 {!TERMINAL.has(data.status) && (
                   <p className="text-xs text-slate-400 text-center pt-1">
-                    This page updates automatically every 10 seconds.
+                    Live updates — this page refreshes the moment your report changes.
                   </p>
                 )}
               </div>
