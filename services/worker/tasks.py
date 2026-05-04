@@ -29,6 +29,8 @@ Retry countdown (2^attempt seconds)
   attempt 3     :  → DLQ, status = failed
 """
 
+import json
+import logging
 import os
 
 import redis
@@ -44,6 +46,18 @@ celery_app.conf.task_serializer = "json"
 celery_app.conf.accept_content  = ["json"]
 
 _redis = redis.Redis.from_url(REDIS_URL)
+log = logging.getLogger(__name__)
+
+
+def _publish_event(channel: str, ticket_id: str, report_id: str | None) -> None:
+    """Publish a JSON event for SSE listeners. Best-effort, never raises."""
+    try:
+        _redis.publish(
+            channel,
+            json.dumps({"ticket_id": ticket_id, "report_id": report_id}),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("publish %s failed: %s", channel, exc)
 
 
 # ── Internal helper ───────────────────────────────────────────────────────────
@@ -123,8 +137,8 @@ def handle_ai_result(report_id: str, enriched: dict):
             .update({"status": "done"})
         db.commit()
 
-    if not existing:
-        _redis.publish("notify:ticket_ready", ticket_id)
+    channel = "notify:ticket_ready" if not existing else "notify:ticket_updated"
+    _publish_event(channel, ticket_id, str(report_id))
 
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────
@@ -149,8 +163,20 @@ def handle_ai_failure(report_id: str, error: str, attempt: int):
                 .update({"status": "failed"})
             db.commit()
 
+        # Push citizens off the polling state so they see the failure right away.
+        _publish_event("notify:ticket_updated", report_id, str(report_id))
+
         celery_app.send_task(
             "worker.tasks.dlq_alert",
             args=[report_id, error],
             queue="reports:dlq",
         )
+
+
+# ── Task 4 ────────────────────────────────────────────────────────────────────
+# Queue: reports:dlq  |  Producer: handle_ai_failure when retries exhausted
+
+@celery_app.task(name="worker.tasks.dlq_alert", queue="reports:dlq")
+def dlq_alert(report_id: str, error: str):
+    """Terminal failure handler. For now: log loudly; real alerting wires here later."""
+    log.error("DLQ report_id=%s error=%s", report_id, error)
