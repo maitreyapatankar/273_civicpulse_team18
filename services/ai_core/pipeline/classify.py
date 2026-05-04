@@ -68,7 +68,6 @@ def _make_client() -> genai.Client:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-
 def describe_image(image_url: str) -> str:
     """Return a one-paragraph description of road damage visible in the image.
 
