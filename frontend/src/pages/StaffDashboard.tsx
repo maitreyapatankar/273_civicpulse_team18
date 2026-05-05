@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
-import api from '../api/client'
+import { Link, useNavigate } from 'react-router-dom'
+import api, { clearOfficerSession, isTokenExpired } from '../api/client'
 import { Ticket, TicketDetailResponse } from '../api/types'
 import AppNav from '../components/AppNav'
 
@@ -22,15 +22,28 @@ function badge(label: string, classes: string) {
 }
 
 export default function StaffDashboard() {
+  const navigate = useNavigate()
   const [actionMessage, setActionMessage] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const officerToken = localStorage.getItem('jwt_token') || ''
   const officerName = (localStorage.getItem('officer_name') || '').trim()
   const officerEmail = (localStorage.getItem('officer_email') || '').trim()
+  const officerId    = (localStorage.getItem('officer_id')    || '').trim()
+  const tokenExpired = officerToken ? isTokenExpired(officerToken) : true
+  const isSessionValid = Boolean(officerToken) && !tokenExpired
 
-  const { data: tickets = [], isLoading, isError } = useQuery<Ticket[]>({
+  useEffect(() => {
+    if (!isSessionValid) {
+      clearOfficerSession()
+      navigate('/officer/login', { replace: true })
+    }
+  }, [isSessionValid, navigate])
+
+  const { data: tickets = [], isLoading, isError, refetch: refetchQueue } = useQuery<Ticket[]>({
     queryKey: ['staff-tickets'],
     queryFn: () => api.get('/tickets?status=open').then((r) => r.data),
     refetchInterval: 60_000,
+    enabled: isSessionValid,
   })
 
   const assigned = useMemo(
@@ -38,15 +51,17 @@ export default function StaffDashboard() {
     [tickets]
   )
 
+  // F36: match against name, email, and officer_id (assigned_to may store any of these)
   const assignedToMe = useMemo(() => {
-    if (!officerName && !officerEmail) return assigned
-    const name = officerName.toLowerCase()
+    if (!officerName && !officerEmail && !officerId) return assigned
+    const name  = officerName.toLowerCase()
     const email = officerEmail.toLowerCase()
+    const id    = officerId.toLowerCase()
     return assigned.filter((ticket) => {
       const assignee = (ticket.assigned_to || '').toLowerCase()
-      return assignee && (assignee === name || assignee === email)
+      return assignee && (assignee === name || assignee === email || (id && assignee === id))
     })
-  }, [assigned, officerName, officerEmail])
+  }, [assigned, officerName, officerEmail, officerId])
 
   const assignedToMeIds = useMemo(
     () => new Set(assignedToMe.map((ticket) => ticket.id)),
@@ -80,11 +95,16 @@ export default function StaffDashboard() {
     [groupedTickets, assignedToMeIds]
   )
 
-  const { data: detail, isLoading: detailLoading, isError: detailError } = useQuery<TicketDetailResponse>({
+  const { data: detail, isLoading: detailLoading, isError: detailError, refetch: refetchDetail } = useQuery<TicketDetailResponse>({
     queryKey: ['staff-ticket-detail', expandedId],
     queryFn: () => api.get(`/tickets/${expandedId}`).then((r) => r.data),
-    enabled: Boolean(expandedId),
+    enabled: Boolean(expandedId) && isSessionValid,
   })
+
+  function handleLogout() {
+    clearOfficerSession()
+    navigate('/officer/login', { replace: true })
+  }
 
   function handlePlaceholder(action: string, ticketId: string) {
     setActionMessage(`${action} pending for ticket ${ticketId.slice(0, 8)}… (workflow coming soon)`)
@@ -109,6 +129,13 @@ export default function StaffDashboard() {
               Tickets currently assigned to your team.
             </p>
           </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="text-xs font-semibold text-rose-600 hover:text-rose-700 transition self-start lg:self-end"
+          >
+            Sign out
+          </button>
         </header>
 
         {actionMessage && (
@@ -122,15 +149,38 @@ export default function StaffDashboard() {
             <div className="glass-card rounded-2xl p-6 text-sm text-slate-500">Loading tickets…</div>
           )}
 
+          {/* F34: prominent error with retry */}
           {isError && (
-            <div className="glass-card rounded-2xl p-6 text-sm text-rose-600">
-              Unable to load assigned tickets.
+            <div className="glass-card rounded-2xl border border-rose-200 bg-rose-50 p-6 flex items-center justify-between">
+              <p className="text-sm font-medium text-rose-700">Unable to load assigned tickets.</p>
+              <button
+                type="button"
+                onClick={() => refetchQueue()}
+                className="text-xs font-semibold text-rose-700 hover:text-rose-800 underline ml-4 flex-shrink-0"
+              >
+                Try again
+              </button>
             </div>
           )}
 
-          {!isLoading && !isError && visibleGroups.length === 0 && (
+          {/* F36: no assigned tickets at all */}
+          {!isLoading && !isError && visibleGroups.length === 0 && assigned.length === 0 && (
             <div className="glass-card rounded-2xl p-6 text-sm text-slate-500">
               No tickets are assigned to you yet.
+            </div>
+          )}
+
+          {/* F36: tickets exist in the system but none match this officer's identity */}
+          {!isLoading && !isError && visibleGroups.length === 0 && assigned.length > 0 && (
+            <div className="glass-card rounded-2xl border border-amber-200 bg-amber-50 p-6 space-y-1">
+              <p className="text-sm font-medium text-amber-800">
+                {assigned.length} ticket{assigned.length !== 1 ? 's are' : ' is'} assigned in the system, but none match your profile.
+              </p>
+              <p className="text-xs text-amber-700">
+                Matching on:{' '}
+                {[officerName, officerEmail, officerId].filter(Boolean).join(' / ') || 'unknown identity'}.
+                Ask a dispatcher to verify the assigned name matches exactly.
+              </p>
             </div>
           )}
 
@@ -226,8 +276,18 @@ export default function StaffDashboard() {
                   {detailLoading && (
                     <p className="text-slate-500">Loading ticket details…</p>
                   )}
+                  {/* F35: retry button on detail fetch failure */}
                   {detailError && (
-                    <p className="text-rose-600">Unable to load ticket details.</p>
+                    <div className="flex items-center gap-3">
+                      <p className="text-rose-600">Could not load ticket details.</p>
+                      <button
+                        type="button"
+                        onClick={() => refetchDetail()}
+                        className="text-xs font-semibold text-cyan-700 hover:text-cyan-800"
+                      >
+                        Try again
+                      </button>
+                    </div>
                   )}
                   {detail && (
                     <>

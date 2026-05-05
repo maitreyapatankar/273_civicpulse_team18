@@ -7,11 +7,8 @@ from passlib.context import CryptContext
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from shared.db import get_db
-from shared.models import Citizen, Officer
+from shared.models import Officer
 from schemas.auth import (
-    CitizenSignupRequest,
-    CitizenLoginRequest,
-    CitizenAuthResponse,
     OfficerLoginRequest,
     OfficerProvisionRequest,
     OfficerProvisionResponse,
@@ -24,8 +21,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _TOKEN_TTL_HOURS = 8
 _pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 _officer_bearer = HTTPBearer()
-_citizen_bearer = HTTPBearer()
-_optional_citizen_bearer = HTTPBearer(auto_error=False)
 
 
 def _hash_password(password: str) -> str:
@@ -101,43 +96,6 @@ def require_admin_jwt(
     return payload
 
 
-def require_citizen_jwt(
-    credentials: HTTPAuthorizationCredentials = Depends(_citizen_bearer),
-) -> dict:
-    try:
-        payload = _decode_token(os.environ["CITIZEN_JWT_SECRET"], credentials.credentials)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    if payload.get("role") != "citizen":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Citizen role required",
-        )
-    return payload
-
-
-def optional_citizen_jwt(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_citizen_bearer),
-) -> dict | None:
-    if not credentials:
-        return None
-    try:
-        payload = _decode_token(os.environ["CITIZEN_JWT_SECRET"], credentials.credentials)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    if payload.get("role") != "citizen":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Citizen role required",
-        )
-    return payload
-
 
 @router.post("/login", response_model=OfficerAuthResponse)
 async def admin_login(body: AdminLoginRequest):
@@ -156,62 +114,6 @@ async def admin_login(body: AdminLoginRequest):
         detail="Invalid credentials",
     )
 
-
-@router.post("/citizen/signup", response_model=CitizenAuthResponse)
-async def citizen_signup(body: CitizenSignupRequest):
-    _ensure_password_length(body.password)
-    with get_db() as db:
-        existing = db.query(Citizen).filter(Citizen.email == body.email).first()
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Citizen already exists",
-            )
-
-        citizen = Citizen(
-            name=body.name,
-            email=body.email,
-            password_hash=_hash_password(body.password),
-        )
-        db.add(citizen)
-        db.commit()
-        db.refresh(citizen)
-
-    token = _issue_token(
-        os.environ["CITIZEN_JWT_SECRET"],
-        subject=str(citizen.id),
-        role="citizen",
-    )
-    return CitizenAuthResponse(
-        access_token=token,
-        citizen_id=citizen.id,
-        email=citizen.email,
-        name=citizen.name,
-    )
-
-
-@router.post("/citizen/login", response_model=CitizenAuthResponse)
-async def citizen_login(body: CitizenLoginRequest):
-    _ensure_password_length(body.password)
-    with get_db() as db:
-        citizen = db.query(Citizen).filter(Citizen.email == body.email).first()
-        if not citizen or not _verify_password(body.password, citizen.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials",
-            )
-
-    token = _issue_token(
-        os.environ["CITIZEN_JWT_SECRET"],
-        subject=str(citizen.id),
-        role="citizen",
-    )
-    return CitizenAuthResponse(
-        access_token=token,
-        citizen_id=citizen.id,
-        email=citizen.email,
-        name=citizen.name,
-    )
 
 
 @router.post("/officer/login", response_model=OfficerAuthResponse)

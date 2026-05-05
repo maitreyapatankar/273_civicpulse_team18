@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import { clearOfficerSession, isTokenExpired } from '../api/client'
 
 type Role = 'public' | 'citizen' | 'officer'
 
@@ -6,11 +7,25 @@ interface AppNavProps {
   activeRole?: Role
 }
 
-function staffLink(): string {
-  return localStorage.getItem('jwt_token') ? '/staff' : '/officer/login'
-}
-
 export default function AppNav({ activeRole = 'public' }: AppNavProps) {
+  const navigate = useNavigate()
+  const isStaffActive = activeRole === 'officer'
+  const officerToken = localStorage.getItem('jwt_token') || ''
+  const isLoggedIn = Boolean(officerToken) && !isTokenExpired(officerToken)
+
+  if (officerToken && !isLoggedIn) {
+    clearOfficerSession()
+  }
+
+  // F41: clear all officer and citizen tokens, then redirect home
+  function handleLogout() {
+    clearOfficerSession()
+    localStorage.removeItem('citizen_token')
+    navigate('/', { replace: true })
+  }
+
+  const staffTarget = isLoggedIn ? '/staff' : '/officer/login'
+
   return (
     <nav className="w-full">
       <div className="mx-auto max-w-6xl px-6 py-6">
@@ -40,11 +55,23 @@ export default function AppNav({ activeRole = 'public' }: AppNavProps) {
                 Report issue
               </Link>
               <Link
-                to={staffLink()}
-                className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
+                to={staffTarget}
+                aria-current={isStaffActive ? 'page' : undefined}
+                className={`text-xs font-semibold transition ${
+                  isStaffActive ? 'text-slate-900' : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
                 Staff
               </Link>
+              {isLoggedIn && (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="text-xs font-semibold text-rose-600 hover:text-rose-700 transition"
+                >
+                  Sign out
+                </button>
+              )}
             </div>
           </div>
         </div>

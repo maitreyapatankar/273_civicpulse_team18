@@ -17,12 +17,11 @@ Urban Infrastructure Reporting at Scale — AI triage, smart deduplication, and 
 cp .env.example .env
 ```
 
-Open `.env` and fill in the three required values. Everything else can stay blank for a local run:
+Open `.env` and fill in the two required values. Everything else can stay blank for a local run:
 
 ```env
 GEMINI_API_KEY=your-key-here
 OFFICER_JWT_SECRET=any-long-random-string
-CITIZEN_JWT_SECRET=another-long-random-string
 ```
 
 > Generate random secrets quickly: `openssl rand -hex 32`
@@ -109,7 +108,6 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 | Variable | What it's used for |
 |----------|--------------------|
 | `OFFICER_JWT_SECRET` | JWT secret for officer/admin tokens (HS256). |
-| `CITIZEN_JWT_SECRET` | JWT secret for citizen tokens (HS256). |
 | `ADMIN_USERNAME` | Bootstrap admin username (default: `admin`). |
 | `ADMIN_PASSWORD` | Bootstrap admin password (default: `adminP`). |
 | `S3_BUCKET` | AWS S3 bucket where citizen-uploaded report photos are stored. |

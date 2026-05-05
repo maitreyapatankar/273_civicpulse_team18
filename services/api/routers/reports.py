@@ -11,11 +11,10 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from celery import Celery
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status, Depends
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from shared.db import get_db
 from shared.models import RawReport
-from routers.auth import optional_citizen_jwt, require_citizen_jwt
 from schemas.report import ReportSubmitted
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -101,7 +100,6 @@ async def create_report(
     reporter_phone: Optional[str]        = Form(None),
     source:         str                  = Form("app"),
     image:          Optional[UploadFile] = File(None),
-    citizen:        Optional[dict]       = Depends(optional_citizen_jwt),
 ):
     if not text and not image:
         raise HTTPException(
@@ -132,16 +130,8 @@ async def create_report(
             raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
 
     with get_db() as db:
-        citizen_id = None
-        if citizen:
-            try:
-                citizen_id = uuid.UUID(citizen.get("sub"))
-            except Exception:
-                citizen_id = None
-
         report = RawReport(
             id=uuid.UUID(report_id),
-            citizen_id=citizen_id,
             source=source,
             text=text,
             image_url=image_url,
@@ -158,66 +148,6 @@ async def create_report(
     log.info("report_create_done report_id=%s status=processing", report_id)
     return ReportSubmitted(ticket_id=report_id, status="processing")
 
-
-# ── PATCH /reports/:id ───────────────────────────────────────────────────────
-
-@router.patch("/{report_id}", status_code=202, response_model=ReportSubmitted)
-async def update_report(
-    report_id: UUID,
-    text:           Optional[str]        = Form(None),
-    lat:            Optional[float]      = Form(None),
-    lng:            Optional[float]      = Form(None),
-    address:        Optional[str]        = Form(None),
-    image:          Optional[UploadFile] = File(None),
-    citizen:        dict                 = Depends(require_citizen_jwt),
-):
-    if not any([text, lat, lng, address, image]):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="At least one field must be provided for update.",
-        )
-
-    with get_db() as db:
-        report = db.get(RawReport, report_id)
-        if not report or str(report.citizen_id) != citizen.get("sub"):
-            raise HTTPException(status_code=404, detail="Report not found")
-        log.info(
-            "report_update_start report_id=%s fields=text:%s lat:%s lng:%s address:%s image:%s",
-            report_id,
-            text is not None,
-            lat is not None,
-            lng is not None,
-            address is not None,
-            bool(image),
-        )
-
-        if text is not None:
-            report.text = text
-        if lat is not None:
-            report.lat = lat
-        if lng is not None:
-            report.lng = lng
-        if address is not None:
-            report.address = address
-
-        if image:
-            content = await image.read()
-            try:
-                report.image_url = _upload_image(
-                    str(report.id),
-                    image.filename or "upload",
-                    content,
-                    image.content_type or "application/octet-stream",
-                )
-            except (BotoCoreError, ClientError) as exc:
-                raise HTTPException(status_code=502, detail=f"Image upload failed: {exc}")
-
-        report.status = "queued"
-        db.commit()
-
-    _enqueue(str(report_id))
-    log.info("report_update_done report_id=%s status=processing", report_id)
-    return ReportSubmitted(ticket_id=str(report_id), status="processing")
 
 
 # ── POST /reports/batch-csv ───────────────────────────────────────────────────

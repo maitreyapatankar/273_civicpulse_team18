@@ -1,17 +1,8 @@
 import { FormEvent, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import api from '../api/client'
+import api, { extractErrorMessage } from '../api/client'
 import AppNav from '../components/AppNav'
 import { OfficerAuthResponse } from '../api/types'
-
-function extractApiError(error: unknown): string {
-  if (typeof error === 'object' && error && 'response' in error) {
-    const response = (error as { response?: { data?: any } }).response
-    const detail = response?.data?.detail
-    if (typeof detail === 'string') return detail
-  }
-  return 'Invalid email or password.'
-}
 
 export default function OfficerLogin() {
   const navigate = useNavigate()
@@ -36,7 +27,10 @@ export default function OfficerLogin() {
       if (data.officer_id) localStorage.setItem('officer_id', data.officer_id)
       navigate('/staff', { replace: true })
     } catch (error) {
-      setError(extractApiError(error))
+      // F20: 401 means wrong credentials on a login form, not an expired session.
+      // For everything else (network down, server error) use the shared extractor.
+      const status = (error as { response?: { status?: number } })?.response?.status
+      setError(status === 401 ? 'Invalid email or password.' : extractErrorMessage(error))
     } finally {
       setLoading(false)
     }

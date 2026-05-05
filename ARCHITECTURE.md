@@ -290,10 +290,9 @@ Client
 
 ### Auth
 
-JWT (`HS256`, separate secrets). Required on:
+JWT (`HS256`). Required on:
 - `POST /auth/officer/provision` (admin)
 - `GET /tickets`, `GET /tickets/:id`, `PATCH /tickets/:id` (officer/admin)
-- `GET /citizens/tickets`, `GET /citizens/tickets/:id` (citizen)
 
 Public (no auth):
 - `POST /reports`
@@ -309,7 +308,6 @@ S3_REGION=us-east-1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 OFFICER_JWT_SECRET=...
-CITIZEN_JWT_SECRET=...
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=adminP
 ```

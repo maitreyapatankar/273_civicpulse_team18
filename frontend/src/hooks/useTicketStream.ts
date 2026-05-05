@@ -18,6 +18,12 @@ interface Options {
   path: string
   /** Called every time the server pushes a real event (skips `ready` + `ping`). */
   onEvent: (event: TicketStreamEvent, payload: TicketStreamPayload) => void
+  /**
+   * F17: Called when the SSE connection errors or reconnects.
+   * `reconnecting` is true while EventSource is trying to reconnect,
+   * false once it successfully re-opens.
+   */
+  onConnectionChange?: (reconnecting: boolean) => void
   /** Pass `false` to skip opening the stream (e.g. when the id is not ready yet). */
   enabled?: boolean
 }
@@ -26,9 +32,11 @@ interface Options {
  * Long-lived SSE subscription. Reconnects automatically on transient failure
  * because the browser's EventSource does that for free.
  */
-export function useTicketStream({ path, onEvent, enabled = true }: Options) {
+export function useTicketStream({ path, onEvent, onConnectionChange, enabled = true }: Options) {
   const handlerRef = useRef(onEvent)
   handlerRef.current = onEvent
+  const connRef = useRef(onConnectionChange)
+  connRef.current = onConnectionChange
 
   useEffect(() => {
     if (!enabled) return
@@ -46,9 +54,16 @@ export function useTicketStream({ path, onEvent, enabled = true }: Options) {
       }
     }
 
-    source.addEventListener('ticket_ready', dispatch('ticket_ready'))
-    source.addEventListener('ticket_updated', dispatch('ticket_updated'))
+    source.addEventListener('ticket_ready',   dispatch('ticket_ready'))
+    source.addEventListener('ticket_updated',  dispatch('ticket_updated'))
     source.addEventListener('ticket_resolved', dispatch('ticket_resolved'))
+
+    // F17: expose SSE health to callers so they can show a degraded-mode indicator.
+    source.addEventListener('ready', () => connRef.current?.(false))
+    source.onerror = () => {
+      // readyState === CONNECTING means the browser is auto-reconnecting.
+      connRef.current?.(source.readyState === EventSource.CONNECTING)
+    }
 
     return () => {
       source.close()

@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import api from '../api/client'
+import api, { extractErrorMessage } from '../api/client'
 import { ReportSubmitted } from '../api/types'
 import AppNav from '../components/AppNav'
 
@@ -30,6 +30,8 @@ interface ReceiptSnapshot {
 }
 
 const TERMINAL = new Set(['resolved', 'failed'])
+// F6: max image size the server will accept without a 413 / 502 from S3
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024 // 10 MB
 
 function formatDate(iso?: string | null): string {
   if (!iso) return '—'
@@ -73,6 +75,8 @@ export default function CitizenDashboard() {
   const [lng, setLng] = useState('')
   const [phone, setPhone] = useState('')
   const [image, setImage] = useState<File | null>(null)
+  const [imageError, setImageError] = useState('')       // F6
+  const [mapTileError, setMapTileError] = useState(false) // F9
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [submitResult, setSubmitResult] = useState<ReportSubmitted | null>(null)
@@ -90,6 +94,18 @@ export default function CitizenDashboard() {
       ? [parsedLat, parsedLng]
       : null
 
+  // F7: warn when the user tries to leave with an unsaved form
+  const formIsDirty = Boolean(title || details || address || image)
+  useEffect(() => {
+    if (!formIsDirty || ticketId) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [formIsDirty, ticketId])
+
   const { data: ticketStatus, isLoading, isError } = useQuery<StatusResponse>({
     queryKey: ['ticket-status', ticketId],
     queryFn: () => api.get(`/tickets/${ticketId}/status`).then((r) => r.data),
@@ -98,11 +114,19 @@ export default function CitizenDashboard() {
     enabled: Boolean(ticketId),
   })
 
+  // F42: discard receipts older than 7 days so stale localStorage entries don't accumulate
+  const RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000
   const receipt = useMemo<ReceiptSnapshot | null>(() => {
     if (!ticketId) return null
     try {
       const raw = localStorage.getItem(`report_receipt_${ticketId}`)
-      return raw ? (JSON.parse(raw) as ReceiptSnapshot) : null
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as ReceiptSnapshot & { savedAt?: number }
+      if (parsed.savedAt && Date.now() - parsed.savedAt > RECEIPT_TTL_MS) {
+        localStorage.removeItem(`report_receipt_${ticketId}`)
+        return null
+      }
+      return { title: parsed.title, details: parsed.details, address: parsed.address, lat: parsed.lat, lng: parsed.lng, phone: parsed.phone }
     } catch {
       return null
     }
@@ -120,6 +144,26 @@ export default function CitizenDashboard() {
     )
   }, [])
 
+  // F6: validate image before storing it
+  function handleImageChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null
+    setImageError('')
+    if (!file) { setImage(null); return }
+    if (!file.type.startsWith('image/')) {
+      setImageError('Only image files are supported (JPEG, PNG, WebP, etc.).')
+      e.target.value = ''
+      setImage(null)
+      return
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setImageError(`Photo must be under 10 MB. Yours is ${(file.size / 1024 / 1024).toFixed(1)} MB.`)
+      e.target.value = ''
+      setImage(null)
+      return
+    }
+    setImage(file)
+  }
+
   async function handleMapPick(pickedLat: number, pickedLng: number) {
     setLat(pickedLat.toFixed(6))
     setLng(pickedLng.toFixed(6))
@@ -132,9 +176,13 @@ export default function CitizenDashboard() {
         `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pickedLat}&lon=${pickedLng}`,
         { headers: { Accept: 'application/json' } }
       )
-      if (!response.ok) {
-        throw new Error('reverse geocode failed')
+      // F10: handle rate limiting from Nominatim
+      if (response.status === 429) {
+        setAddressError('Address lookup is temporarily rate-limited. Wait a moment and try again.')
+        setAddressLoading(false)
+        return
       }
+      if (!response.ok) throw new Error('reverse geocode failed')
       const data = await response.json()
       if (data?.display_name) {
         setAddress(data.display_name)
@@ -152,47 +200,55 @@ export default function CitizenDashboard() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    setSubmitting(true)
     setSubmitError('')
     setSubmitResult(null)
 
     if (!addressResolved || !lat || !lng) {
       setSubmitError('Please search and confirm a valid address before submitting.')
-      setSubmitting(false)
       return
     }
+
+    // F8: phone format validation
+    if (phone && !/^\+?[\d\s\-()\[\]]{7,20}$/.test(phone.trim())) {
+      setSubmitError('Enter a valid phone number (e.g. +1 202 555 0114).')
+      return
+    }
+
+    if (imageError) return
+
+    setSubmitting(true)
 
     const formData = new FormData()
     formData.append('text', `${title}\n\n${details}`)
     formData.append('lat', lat)
     formData.append('lng', lng)
     formData.append('address', address)
-    if (phone) formData.append('reporter_phone', phone)
+    if (phone) formData.append('reporter_phone', phone.trim())
     formData.append('source', 'app')
     if (image) formData.append('image', image)
 
+    // F12: track navigation so we don't call setSubmitting on an unmounted component
+    let navigating = false
     try {
       const { data } = await api.post<ReportSubmitted>('/reports', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60_000, // image uploads need more time than the 20s default
       })
       setSubmitResult(data)
       localStorage.setItem(
         `report_receipt_${data.ticket_id}`,
-        JSON.stringify({ title, details, address, lat, lng, phone })
+        JSON.stringify({ title, details, address, lat, lng, phone, savedAt: Date.now() })
       )
-      setTitle('')
-      setDetails('')
-      setAddress('')
-      setLat('')
-      setLng('')
-      setPhone('')
-      setImage(null)
-      setAddressResolved(false)
+      navigating = true
       navigate(`/report/${data.ticket_id}`, { replace: true })
-    } catch {
-      setSubmitError('We could not submit your complaint. Please try again.')
+    } catch (error) {
+      // F5: use the centralised extractor for meaningful error messages
+      setSubmitError(
+        extractErrorMessage(error, 'We could not submit your complaint. Please try again.')
+      )
     } finally {
-      setSubmitting(false)
+      // F12: skip state update if we already navigated away
+      if (!navigating) setSubmitting(false)
     }
   }
 
@@ -209,9 +265,12 @@ export default function CitizenDashboard() {
         `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(address)}`,
         { headers: { Accept: 'application/json' } }
       )
-      if (!response.ok) {
-        throw new Error('search failed')
+      // F10: handle Nominatim rate limiting (1 req/s limit)
+      if (response.status === 429) {
+        setAddressError('Too many search requests. Wait a moment and try again.')
+        return
       }
+      if (!response.ok) throw new Error('search failed')
       const results = await response.json()
       if (Array.isArray(results) && results[0]) {
         const foundLat = Number(results[0].lat)
@@ -220,9 +279,7 @@ export default function CitizenDashboard() {
           setLat(foundLat.toFixed(6))
           setLng(foundLng.toFixed(6))
           setMapCenter([foundLat, foundLng])
-          if (results[0].display_name) {
-            setAddress(results[0].display_name)
-          }
+          if (results[0].display_name) setAddress(results[0].display_name)
           setAddressResolved(true)
         }
       } else {
@@ -235,6 +292,7 @@ export default function CitizenDashboard() {
     }
   }
 
+  // ── Confirmation view (post-submit) ──────────────────────────────────────────
   if (ticketId) {
     return (
       <div className="min-h-screen bg-grid">
@@ -255,11 +313,16 @@ export default function CitizenDashboard() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Status</p>
-                {isLoading && <p className="text-sm text-slate-500 mt-1">Loading…</p>}
-                {isError && <p className="text-sm text-rose-600 mt-1">Unable to fetch status.</p>}
+                {isLoading && <p className="text-sm text-slate-400 mt-1 animate-pulse">Checking…</p>}
+                {/* F11: status poll failure ≠ submission failure — use neutral wording */}
+                {isError && (
+                  <p className="text-sm text-slate-500 mt-1">
+                    Status temporarily unavailable.
+                  </p>
+                )}
                 {ticketStatus && (
-                  <p className="text-sm font-semibold text-slate-900 mt-1">
-                    {ticketStatus.status}
+                  <p className="text-sm font-semibold text-slate-900 mt-1 capitalize">
+                    {ticketStatus.status.replace('_', ' ')}
                   </p>
                 )}
               </div>
@@ -312,6 +375,7 @@ export default function CitizenDashboard() {
     )
   }
 
+  // ── Report form ──────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-grid">
       <AppNav activeRole="public" />
@@ -329,7 +393,7 @@ export default function CitizenDashboard() {
           <form onSubmit={handleSubmit} className="glass-card rounded-3xl p-6 shadow-xl">
             <h2 className="text-xl font-semibold text-slate-900">Report an issue</h2>
             <p className="text-sm text-slate-500 mt-1">
-              Address and issue details are required. Photo is optional.
+              Address and issue details are required. Photo is optional (max 10 MB).
             </p>
 
             <div className="mt-6 space-y-4">
@@ -383,15 +447,22 @@ export default function CitizenDashboard() {
                     <p className="text-xs text-emerald-600 mt-2">Address confirmed.</p>
                   )}
                 </div>
+
+                {/* F6: accept="image/*" restricts picker to images; onChange validates type + size */}
                 <div>
-                  <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Photo (optional)</label>
+                  <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Photo (optional, max 10 MB)</label>
                   <input
                     type="file"
-                    onChange={(e) => setImage(e.target.files?.[0] ?? null)}
+                    accept="image/*"
+                    onChange={handleImageChange}
                     className="mt-2 w-full rounded-2xl border border-dashed border-slate-300 px-4 py-3 text-sm text-slate-500"
                   />
+                  {imageError && (
+                    <p className="mt-1 text-xs text-rose-600">{imageError}</p>
+                  )}
                 </div>
               </div>
+
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Latitude</label>
@@ -416,11 +487,13 @@ export default function CitizenDashboard() {
                   />
                 </div>
               </div>
+
               <div>
                 <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
                   Pick on map{locating ? ' — locating you…' : ''}
                 </label>
-                <div className="mt-2 h-48 rounded-2xl overflow-hidden border border-slate-200">
+                {/* F9: relative wrapper so we can layer a tile-error overlay */}
+                <div className="mt-2 h-48 rounded-2xl overflow-hidden border border-slate-200 relative">
                   <MapContainer
                     center={mapCenter}
                     zoom={12}
@@ -429,25 +502,35 @@ export default function CitizenDashboard() {
                   >
                     <TileLayer
                       url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors'
+                      eventHandlers={{
+                        tileerror: () => setMapTileError(true),
+                        load:      () => setMapTileError(false),
+                      }}
                     />
                     <MapRecenter center={mapCenter} />
-                    <LocationPicker
-                      onPick={handleMapPick}
-                    />
-                    {markerPosition && (
-                      <Marker position={markerPosition} />
-                    )}
+                    <LocationPicker onPick={handleMapPick} />
+                    {markerPosition && <Marker position={markerPosition} />}
                   </MapContainer>
+                  {/* F9: overlay when tile server is unreachable */}
+                  {mapTileError && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 z-[1000] text-xs text-slate-600 text-center px-4">
+                      Map tiles unavailable. You can still click to set coordinates, or search an address above.
+                    </div>
+                  )}
                 </div>
-                <div className="mt-2 text-xs text-slate-500">
+                <div className="mt-2 text-xs text-slate-500 space-y-0.5">
                   <p>Click the map to auto-fill latitude and longitude.</p>
+                  {/* F13: Nominatim attribution (required by their usage policy) */}
+                  <p>Address search powered by <a href="https://nominatim.openstreetmap.org" target="_blank" rel="noreferrer" className="underline">Nominatim</a> / © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline">OpenStreetMap</a> contributors.</p>
                   {addressLoading && <p className="text-cyan-700">Resolving address…</p>}
                   {addressError && <p className="text-rose-600">{addressError}</p>}
                 </div>
               </div>
+
               <div>
-                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Phone (optional)</label>
+                {/* F8: tel input with format hint */}
+                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Phone (optional — for SMS updates)</label>
                 <input
                   type="tel"
                   value={phone}
@@ -455,13 +538,14 @@ export default function CitizenDashboard() {
                   placeholder="+1 202 555 0114"
                   className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
                 />
+                <p className="mt-1 text-xs text-slate-400">Include country code, e.g. +1 for US.</p>
               </div>
             </div>
 
             <button
               type="submit"
-              disabled={submitting}
-              className="mt-6 w-full rounded-2xl bg-slate-900 text-white py-3 text-sm font-semibold hover:bg-slate-800 transition"
+              disabled={submitting || Boolean(imageError)}
+              className="mt-6 w-full rounded-2xl bg-slate-900 text-white py-3 text-sm font-semibold hover:bg-slate-800 transition disabled:opacity-60"
             >
               {submitting ? 'Submitting…' : 'Submit complaint'}
             </button>
