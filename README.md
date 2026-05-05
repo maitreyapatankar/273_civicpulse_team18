@@ -61,37 +61,8 @@ You should see `Running upgrade ... -> 0007` lines. This creates all tables.
 
 ---
 
-### Step 4 — Create your first officer account
-
-**Option A — UI signup** (simplest):
-
-Go to [http://localhost:5173/officer/signup](http://localhost:5173/officer/signup), fill in name, email, and password.
-
-Then set your department so tickets auto-assign to you:
-
-```bash
-docker compose exec postgres psql -U civic -d civicpulse -c \
-  "UPDATE officers SET department = 'roads' WHERE email = 'you@example.com';"
-```
-
-Valid departments: `roads` · `traffic` · `drainage` · `structures` · `operations`
-
-**Option B — Direct SQL** (sets role + department in one step):
-
-```bash
-# 1. Generate a password hash (replace yourpassword)
-docker compose run --rm api python -c "
-from passlib.context import CryptContext
-ctx = CryptContext(schemes=['bcrypt_sha256','bcrypt'], deprecated='auto')
-print(ctx.hash('yourpassword'))
-"
-
-# 2. Insert the officer (paste the hash from step 1)
-docker compose exec postgres psql -U civic -d civicpulse -c "
-INSERT INTO officers (id, name, email, password_hash, role, department, created_at)
-VALUES (gen_random_uuid(), 'Your Name', 'you@example.com', '<paste-hash>', 'admin', 'roads', now());
-"
-```
+### Step 4 — 
+Current staff login - admin@gmail.com Pass: adminP
 
 ---
 
