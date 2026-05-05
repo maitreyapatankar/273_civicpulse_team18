@@ -18,7 +18,7 @@ dispatchers.
 | S4 | Frontend | React dispatcher dashboard + citizen status tracker | Eng 4 | 5173 (dev) |
 | S5 | Notifications | Redis pub-sub listener, fires Twilio SMS | Eng 4 (week 2) | **none** |
 
-**Shared infrastructure:** Postgres 15, Redis 7, Pinecone (free tier), AWS S3 / Cloudflare R2.
+**Shared infrastructure:** Postgres 15, Redis 7, AWS S3 / Cloudflare R2.
 
 > **Key design rule:** S1 never calls S2 directly. S2 never exposes HTTP.
 > All S1 → S2 → S3 communication is exclusively through Redis queues.
@@ -41,12 +41,15 @@ civicpulse/
 │   │   └── schemas/            # Pydantic request/response schemas
 │   ├── ai_core/                # Service 2 — pure Celery consumer, NO HTTP server
 │   │   ├── consumer.py         # Celery app + run_pipeline task
-│   │   ├── pipeline/
-│   │   │   ├── classify.py
-│   │   │   ├── dedup.py
-│   │   │   ├── urgency.py
-│   │   │   └── workorder.py
-│   │   └── prompts/            # prompt templates as .txt files
+│   │   ├── taxonomy.json       # 9 categories, 59 subcategory codes
+│   │   └── pipeline/
+│   │       ├── graph.py        # LangGraph graph — 4 nodes wired together
+│   │       ├── state.py        # PipelineState TypedDict + initial_state()
+│   │       └── nodes/
+│   │           ├── image_description.py
+│   │           ├── classify.py
+│   │           ├── dedup.py
+│   │           └── urgency.py  # P1 detection + LLM scoring node
 │   ├── worker/                 # Service 3 — Celery job orchestrator
 │   │   ├── celery_app.py
 │   │   └── tasks.py            # process_report, handle_ai_result, handle_ai_failure
@@ -76,10 +79,7 @@ civicpulse/
 | Web framework | FastAPI 0.110 | S1 only | Auto OpenAPI, async, Pydantic built-in |
 | Language | Python 3.11 | S1, S2, S3, S5 | One language across backend |
 | Async job queue | Celery 5 + Redis | S2, S3 | Both services are pure Celery consumers |
-| LLM — reasoning | gemini-2.5-flash | S2 | Single multimodal model for classify, score, and work order generation |
-| LLM — vision | gemini-2.5-flash | S2 | Same model handles image description in one call — no second key, no second client |
-| Embeddings | all-MiniLM-L6-v2 (sentence-transformers) | S2 | 384-dim, runs locally — no API key, zero cost per embedding |
-| Vector DB | Pinecone (free tier) | S2 | Managed, geo-filter support, zero infra |
+| LLM — all steps | gemini-2.5-flash-lite | S2 | Single model for image description, classification, and urgency scoring |
 | ORM | SQLAlchemy 2 + Alembic | S1, S3 | Version-controlled migrations |
 | Primary DB | Postgres 15 | infra | JSONB for AI outputs, PostGIS-ready for Phase 2 |
 | Cache + broker | Redis 7 | infra | Celery broker + all inter-service queues + pub-sub |
@@ -130,11 +130,11 @@ All inter-service communication flows through these named queues.
         │
         ▼
 4. S2 AI Core — consumes ai_core:process
-   - Step 1: Image description  (gemini-2.5-flash, skip if no image)
-   - Step 2: Classification     (gemini-2.5-flash → structured JSON)
-   - Step 3: Deduplication      (local all-MiniLM-L6-v2 → Pinecone ANN)
-   - Step 4: Urgency scoring    (keyword rule first, then gemini-2.5-flash)
-   - Step 5: Work order gen     (gemini-2.5-flash)
+   - Step 1: Image description  (gemini-2.5-flash-lite, skip if no image)
+   - Step 2: Classification     (gemini-2.5-flash-lite → category, subcategory, severity, confidence,
+                                  image_text_conflict, image_classification_hint)
+   - Step 3: Deduplication      (direct Postgres read — subcategory + 100 m geo bbox)
+   - Step 4: Urgency scoring    (P1 subcodes/keywords/rate override first, then gemini-2.5-flash-lite)
 
    On success → LPUSH ai_core:results {report_id, enriched_ticket}
    On failure → LPUSH ai_core:failed  {report_id, error, attempt}
@@ -142,6 +142,7 @@ All inter-service communication flows through these named queues.
         ▼
 5. S3 Worker — consumes ai_core:results
   - INSERT tickets (new) OR UPDATE ticket (edit)
+  - Auto-assign to officer: category_code → department → fewest open tickets
   - UPDATE raw_reports SET status = "done"
   - PUBLISH notify:ticket_ready {ticket_id} (new only)
 
@@ -182,22 +183,31 @@ CREATE TABLE raw_reports (
 
 -- AI-enriched tickets (written by S3 after AI pipeline completes)
 CREATE TABLE tickets (
-  id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  raw_report_id        UUID REFERENCES raw_reports(id),
-  issue_type           TEXT,             -- pothole | flooding | sinkhole | crack | sign_damage | other
-  severity             INT,              -- 1-5
-  urgency_score        FLOAT,            -- 1.0-5.0
-  urgency_factors      JSONB,            -- {safety_risk, traffic_impact, cluster_volume, days_open}
-  ai_reasoning         TEXT,             -- one sentence shown to dispatcher
-  confidence           FLOAT,            -- 0.0-1.0; below 0.70 flags for human review
-  duplicate_of         UUID REFERENCES tickets(id),
-  cluster_count        INT DEFAULT 1,    -- reports merged into this ticket
-  work_order           JSONB,            -- {crew_type, materials[], est_hours, notes}
-  dispatcher_override  BOOLEAN DEFAULT FALSE,
-  override_by          TEXT,             -- dispatcher user id
-  override_at          TIMESTAMPTZ,
-  resolved_at          TIMESTAMPTZ,
-  created_at           TIMESTAMPTZ DEFAULT NOW()
+  id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  raw_report_id             UUID REFERENCES raw_reports(id),
+  issue_type                TEXT,             -- legacy field; category/subcategory preferred
+  category_code             TEXT,             -- e.g. RD, DR, TF
+  category_name             TEXT,
+  subcategory_code          TEXT,             -- e.g. RD-001
+  subcategory_name          TEXT,
+  severity                  INT,              -- 1-5
+  urgency_score             FLOAT,            -- 1.0-5.0
+  urgency_factors           JSONB,            -- {safety_risk, traffic_impact, cluster_volume, low_confidence}
+  ai_reasoning              TEXT,             -- urgency reasoning sentence shown to dispatcher
+  confidence                FLOAT,            -- 0.0-1.0; below 0.70 flags for human review
+  image_text_conflict       BOOLEAN DEFAULT FALSE,
+  image_classification_hint TEXT,             -- what the image suggests when conflict detected
+  needs_review              BOOLEAN DEFAULT FALSE,
+  duplicate_of              UUID REFERENCES tickets(id),
+  cluster_count             INT DEFAULT 1,
+  work_order                JSONB,            -- {crew_type, materials[], est_hours, notes}
+  dispatcher_override       BOOLEAN DEFAULT FALSE,
+  override_by               TEXT,
+  override_at               TIMESTAMPTZ,
+  assigned_to               TEXT,             -- officer name; set by auto-assign or dispatcher
+  assigned_at               TIMESTAMPTZ,
+  resolved_at               TIMESTAMPTZ,
+  created_at                TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE citizens (
@@ -213,7 +223,8 @@ CREATE TABLE officers (
   name           TEXT NOT NULL,
   email          TEXT UNIQUE NOT NULL,
   password_hash  TEXT NOT NULL,
-  role           TEXT NOT NULL DEFAULT 'officer',
+  role           TEXT NOT NULL DEFAULT 'officer',  -- officer | admin
+  department     TEXT,   -- roads | traffic | drainage | structures | operations
   created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -311,7 +322,7 @@ ADMIN_PASSWORD=adminP
 **Framework:** Celery only. NO FastAPI. NO HTTP server. NO exposed port.
 **Responsibilities:** Consume from `ai_core:process`, run the 5-step pipeline,
 publish to `ai_core:results` on success or `ai_core:failed` on failure.
-Never reads or writes Postgres directly — fully stateless.
+Reads Postgres (read-only) for deduplication. Never writes to Postgres — S3 owns all writes.
 
 ### Celery consumer
 
@@ -343,43 +354,43 @@ def run_pipeline(self, report_id: str, payload: dict):
         # do NOT re-raise — retry decision belongs to S3 Worker
 ```
 
-### Pipeline — 5 steps in sequence
+### Pipeline — 4 nodes in sequence (LangGraph)
 
 ```
 payload: {report_id, text, image_url, lat, lng, address, attempt}
    │
    ▼
-Step 1 — Image description          (skip if no image_url)
-  Model  : gemini-2.5-flash (multimodal)
-  Prompt : "Describe visible road damage in this photo. One paragraph."
-  Output : image_desc string → appended to text context for Step 2
+Node 1 — image_description          (skip if no image_url)
+  Model  : gemini-2.5-flash-lite (multimodal)
+  Output : image_desc string → appended to context for Node 2
    │
    ▼
-Step 2 — Classification
-  Model  : gemini-2.5-flash
-  Output : {issue_type, severity 1-5, confidence 0-1, reasoning}
-  Gate   : confidence < 0.70 → flag ticket for human review
+Node 2 — classify
+  Model  : gemini-2.5-flash-lite
+  Output : {category_code, subcategory_code, severity 1-5, confidence 0-1,
+            reasoning, image_text_conflict, image_classification_hint}
+  Gate   : confidence < 0.70 OR image_text_conflict → needs_review = true
+   │
+   ▼  (conditional: needs_review → flag_review node → back to main path)
+Node 3 — dedup
+  Method : direct Postgres read-only SELECT — subcategory_code + ±0.0009° geo bbox (~100 m)
+  Match  : open, non-duplicate ticket found → is_duplicate=true, master_ticket_id set,
+           cluster_rate_per_hour computed from master ticket created_at
+  No match → is_duplicate=false, cluster_rate_per_hour=0.0
    │
    ▼
-Step 3 — Deduplication
-  Model  : all-MiniLM-L6-v2 (sentence-transformers, 384-dim, local) → Pinecone ANN
-  Filter : 500m geo bbox (lat ±0.005, lng ±0.005), last 30 days
-  Match  : cosine > 0.88 → is_duplicate = true, set duplicate_of
-           no match → upsert new vector to Pinecone
-   │
-   ▼
-Step 4 — Urgency scoring
-  First  : P1 keyword rule override (zero tokens)
-           keywords: sinkhole, collapse, flooding, live wire, gas leak,
-                     bridge, guardrail, car fell, ambulance blocked
-  Model  : gemini-2.5-flash (only if no keyword match)
-  Output : {score 1-5, factors{safety_risk, traffic_impact,
-            cluster_volume, days_open}, reasoning}
-   │
-   ▼
-Step 5 — Work order generation
-  Model  : gemini-2.5-flash
-  Output : {crew_type, materials[], est_hours, notes}
+Node 4 — urgency_score              (runs for ALL tickets including duplicates)
+  Tier 1 : P1 override (zero tokens) — checked in order:
+             a. subcategory code in P1 set (RD-006, TF-002, ST-004, DR-003, …)
+             b. keyword scan across text + image_desc
+             c. cluster_rate_per_hour ≥ 3 reports/hour
+  Tier 2 : gemini-2.5-flash-lite (only if no P1 trigger fires)
+  Context: subcategory, severity, confidence, cluster_count, cluster_rate_per_hour,
+           address, text, image_desc, classifier reasoning, conflict hint
+  Factors: safety_risk (0.45), traffic_impact (0.30),
+           cluster_volume (0.20), low_confidence (0.05)
+  Output : {urgency_score 1-5, urgency_factors{…}, urgency_reasoning}
+  Post   : severity=5 floor (score≥4); needs_review cap (score≤4 unless P1)
    │
    ▼
 EnrichedTicket dict → LPUSH ai_core:results
@@ -387,94 +398,58 @@ EnrichedTicket dict → LPUSH ai_core:results
 
 ### Classification prompt
 
-```python
-SYSTEM = """You are a municipal infrastructure classifier for a city maintenance department.
-Classify the road issue report below. Respond ONLY with valid JSON — no explanation,
-no markdown, no preamble. Match this exact schema:
-
-{
-  "issue_type": "pothole" | "flooding" | "sinkhole" | "crack" | "sign_damage" | "other",
-  "severity": 1 | 2 | 3 | 4 | 5,
-  "confidence": <float 0.0-1.0>,
-  "reasoning": "<one sentence>"
-}
-
-Severity scale:
-1 = cosmetic, no safety risk
-2 = minor inconvenience
-3 = moderate — affects traffic flow
-4 = serious — safety risk to vehicles
-5 = critical — immediate danger, possible injury"""
-
-USER = """Location: {address}
-Report text: "{text}"
-{f'Image description: {image_desc}' if image_desc else ''}"""
-```
+See `services/ai_core/pipeline/nodes/classify.py` — `CLASSIFIER_SYSTEM_PROMPT`.
+Outputs: `category_code`, `subcategory_code`, `severity`, `confidence`, `reasoning`,
+`image_text_conflict`, `image_classification_hint`.
 
 ### Urgency scoring prompt
 
-```python
-SYSTEM = """You score road issue urgency for a city maintenance department.
-Respond ONLY with valid JSON matching this schema:
-
-{
-  "score": 1 | 2 | 3 | 4 | 5,
-  "factors": {
-    "safety_risk":    <float 0-1>,
-    "traffic_impact": <float 0-1>,
-    "cluster_volume": <float 0-1>,
-    "days_unresolved":<float 0-1>
-  },
-  "reasoning": "<one sentence shown to dispatcher>"
-}
-
-Scoring weights: safety_risk 0.4, traffic_impact 0.3,
-                 cluster_volume 0.2, days_unresolved 0.1"""
-
-USER = """Issue type: {issue_type}
-Severity: {severity}/5
-Reports in cluster: {cluster_count}
-Days since first report: {days_open}
-Report text: "{text}" """
-```
+See `services/ai_core/pipeline/nodes/urgency.py` — `_SYSTEM` and `_build_user_msg()`.
+Factors: `safety_risk` (0.45), `traffic_impact` (0.30), `cluster_volume` (0.20), `low_confidence` (0.05).
+Inputs include `cluster_rate_per_hour` so the LLM can weight a fast-growing cluster more heavily.
 
 ### Deduplication logic
 
+Direct Postgres read — no embeddings, no vector DB.
+
 ```python
-# Embed locally with sentence-transformers — no API call, no cost.
-vec = embedder.encode(report["text"], convert_to_numpy=True).tolist()
+# services/ai_core/pipeline/nodes/dedup.py
+#
+# Match criteria (all must hold):
+#   1. Same subcategory_code  (set by classify node)
+#   2. Ticket is open         (resolved_at IS NULL)
+#   3. Ticket is not itself a duplicate (duplicate_of IS NULL)
+#   4. Raw report lat/lng within ~100 m (±0.0009°)
+#
+# Fails open: if the query errors, the report continues as non-duplicate.
 
-results = index.query(
-    vector=vec,
-    filter={
-        "lat":           {"$gte": lat - 0.005, "$lte": lat + 0.005},
-        "lng":           {"$gte": lng - 0.005, "$lte": lng + 0.005},
-        "created_epoch": {"$gte": thirty_days_ago_epoch}
-    },
-    top_k=5, include_metadata=True
-)
+SELECT t.id, t.cluster_count
+FROM   tickets t
+JOIN   raw_reports r ON r.id = t.raw_report_id
+WHERE  t.subcategory_code = %s
+  AND  t.resolved_at   IS NULL
+  AND  t.duplicate_of  IS NULL
+  AND  r.id            != %s          -- exclude current report (retry safety)
+  AND  ABS(r.lat - %s) < 0.0009
+  AND  ABS(r.lng - %s) < 0.0009
+ORDER  BY t.created_at DESC
+LIMIT  1
 
-if results.matches and results.matches[0].score > 0.88:
-    return DedupResult(is_duplicate=True,
-                       master_ticket_id=results.matches[0].id)
-
-index.upsert(vectors=[(
-    report["report_id"], vec,
-    {"lat": lat, "lng": lng,
-     "created_epoch": int(time.time()), "issue_type": issue_type}
-)])
-return DedupResult(is_duplicate=False)
+# Match found  → is_duplicate=True,  master_ticket_id=<id>, cluster_count += 1
+# No match     → is_duplicate=False, proceed to urgency scoring
+# Query error  → is_duplicate=False  (fail open, log warning)
 ```
+
+Graph routing: all tickets (including duplicates) proceed to urgency_score.
+For duplicates, the re-scored urgency is propagated back to the master ticket
+so the dispatcher queue reflects the updated cluster weight.
 
 ### Environment variables
 
 ```env
 GEMINI_API_KEY=...
-PINECONE_API_KEY=...
-PINECONE_INDEX=civicpulse-reports   # must be created at 384 dims, cosine
 REDIS_URL=redis://...
-# No DATABASE_URL — S2 never touches Postgres
-# No embedding API key — embeddings run locally via sentence-transformers
+DATABASE_URL=postgresql://...   # read-only for dedup; S3 still owns all writes
 ```
 
 ---
@@ -484,7 +459,7 @@ REDIS_URL=redis://...
 **Entry point:** `services/worker/tasks.py`
 **Framework:** Celery 5
 **Responsibilities:** Full async lifecycle orchestration. Owns all DB writes.
-Owns all retry decisions. Consumes three queues.
+Owns all retry decisions. Consumes three queues. Auto-assigns tickets to officers.
 
 ### Three Celery tasks
 
@@ -578,19 +553,38 @@ REDIS_URL=redis://...
 **Framework:** React 18 + Vite + TypeScript
 **Libraries:** TanStack Query, React-Leaflet, Tailwind CSS
 
-### Views
+### Routes
 
-**Dispatcher dashboard** (`/dashboard`) — JWT authenticated
+| Path | Page | Auth | Purpose |
+|------|------|------|---------|
+| `/` | Landing | public | Home page + entry points |
+| `/report` | CitizenDashboard | public | Anonymous report submission with map picker |
+| `/report/:ticketId` | CitizenDashboard | public | Post-submission confirmation + status |
+| `/track/:ticketId` | CitizenTracker | public | Ticket status tracker |
+| `/officer/login` | OfficerLogin | public | Officer / admin login |
+| `/officer/signup` | OfficerSignup | public | Officer self-registration |
+| `/officer/dashboard` | DispatcherDashboard | JWT | Full dispatcher queue + map + overrides |
+| `/staff` | StaffDashboard | JWT | Assigned-ticket review panel for field staff |
+
+**DispatcherDashboard** (`/officer/dashboard`)
 - Priority queue sorted by `urgency_score DESC`
-- Per-ticket: issue type, address, cluster count, confidence bar, AI reasoning
+- Per-ticket detail panel: customer submission (text + photo), AI urgency reasoning, urgency factor bars, map pin
 - `confidence < 0.70` tickets in a separate "needs review" tab
-- Actions: confirm AI / override priority / assign crew
-- Leaflet map with pin at report GPS location
+- Actions: override priority / assign crew / add department update / mark resolved
+- SSE realtime updates via Redis pub-sub
 
-**Citizen status tracker** (`/track/:ticketId`) — public
-- Status: queued → processing → open → resolved
-- If duplicate: "Your report was merged with {n} similar nearby reports"
-- Polls every 10s until resolved
+**StaffDashboard** (`/staff`)
+- Shows only tickets assigned to the logged-in officer
+- "More details" on every ticket: customer text + photo, conflict callout, confidence bar, AI reasoning
+- Grouped by cluster (master + duplicates)
+
+**CitizenDashboard** (`/report`)
+- Anonymous report form: title, description, address search, map click to pin location (geolocation on load), optional photo
+- Post-submission: confirmation with ticket ID and live status polling
+
+**CitizenTracker** (`/track/:ticketId`)
+- Public status page: queued → processing → open → in_progress → resolved
+- Department updates visible to citizen
 
 ### Data fetching
 
@@ -700,7 +694,7 @@ services:
   ai_core:
     build: ./services/ai_core
     command: celery -A consumer worker --concurrency=4 -Q ai_core:process
-    depends_on: [redis]
+    depends_on: [redis, postgres]
     env_file: .env
     # No ports — pure queue consumer, no HTTP server
 
@@ -746,7 +740,7 @@ S3 Worker  ───────────────────────
   │                                                      │
   │  LPUSH ai_core:process                    consumes ai_core:results
   ▼                                           consumes ai_core:failed
-S2 AI Core (no HTTP, no DB access)
+S2 AI Core (no HTTP, no DB writes — reads Postgres for dedup only)
   │
   ├── on success → LPUSH ai_core:results ──► S3 Worker
   │                                              │
@@ -775,15 +769,15 @@ S4 Frontend ──REST HTTP──► S1 API Gateway (all reads, all writes via S
 |----------|--------|--------|
 | S2 has no HTTP server | Pure Celery consumer | Eliminates 30s synchronous wait; S2 scales independently of S3 |
 | Retry logic owned by S3, not S2 | Worker decides retries | S2 stays stateless; single place to change retry policy |
-| S2 never touches Postgres | Results go via queue to S3 | S2 is fully stateless — easier to scale, test, and replace |
+| S2 reads Postgres for dedup only | Read-only SELECT in dedup node | Subcategory + geo bbox match is deterministic and needs no external service; S3 still owns all writes |
+| S2 never writes Postgres | Results go via queue to S3 | Single-writer pattern avoids concurrent write conflicts; S2 stays independently scalable |
 | S1 returns 202 immediately | Never waits for AI | API p99 latency under 200ms regardless of LLM latency |
 | Confidence gate at 0.70 | Human review below threshold | Safe starting point; tune down as accuracy data accumulates |
 | P1 keyword override before LLM | Deterministic safety net | Zero latency, zero tokens, zero hallucination on safety-critical cases |
-| Dedup cosine threshold 0.88 | Pinecone similarity cutoff | 0.85 produces too many false positives |
-| Gemini 2.5 Flash for all LLM steps | Single multimodal model | Same model handles vision + structured reasoning — one prompt style, one key, one client across all 4 LLM steps |
-| Local sentence-transformers for embeddings | all-MiniLM-L6-v2 (384-dim) | Zero per-embedding cost; no extra API key; small model fits in S2 container |
+| Dedup via subcategory + 100 m geo bbox | Direct Postgres JOIN | Subcategory from classify node + required lat/lng fields make a reliable signal without any ML; fail-open on query error |
+| Urgency scored for duplicates too | Unconditional edge dedup → urgency | Master ticket urgency is updated as the cluster grows; dispatcher sees live priority |
+| gemini-2.5-flash-lite for all LLM steps | Single lightweight model | Handles vision + classification + urgency — one key, one client, lower cost per call |
+| Auto-assignment by department + load balance | Worker maps category_code prefix to department, picks officer with fewest open tickets | Ensures skill-matched routing; load-balances within department; preserves manual overrides |
 | Monorepo | Single repo, multiple service folders | Shared models + one docker-compose + simpler CI for a 4-person team |
-| Pinecone free tier | Hosted vector DB for MVP | Zero infra; swap to self-hosted Qdrant in Phase 2 if cost grows |
-| S3 is sole DB writer | Single writer pattern | Avoids concurrent write conflicts between S2 and S3 |
 
 ---

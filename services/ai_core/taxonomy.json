@@ -1,0 +1,104 @@
+{
+  "categories": [
+    {
+      "code": "RD", "name": "Road Surface",
+      "subcategories": [
+        {"code": "RD-001", "name": "Pothole"},
+        {"code": "RD-002", "name": "Alligator cracking"},
+        {"code": "RD-003", "name": "Longitudinal crack"},
+        {"code": "RD-004", "name": "Transverse crack"},
+        {"code": "RD-005", "name": "Surface rutting / depression"},
+        {"code": "RD-006", "name": "Subsidence / sinkhole"},
+        {"code": "RD-007", "name": "Edge break / lane drop-off"},
+        {"code": "RD-008", "name": "Bleeding / raveling"}
+      ]
+    },
+    {
+      "code": "SG", "name": "Signage",
+      "subcategories": [
+        {"code": "SG-001", "name": "Missing sign"},
+        {"code": "SG-002", "name": "Damaged / bent sign"},
+        {"code": "SG-003", "name": "Faded / illegible sign"},
+        {"code": "SG-004", "name": "Obscured sign (vegetation)"},
+        {"code": "SG-005", "name": "Wrong sign placement"},
+        {"code": "SG-006", "name": "Stop sign damage"},
+        {"code": "SG-007", "name": "Speed limit sign damage"},
+        {"code": "SG-008", "name": "Direction sign damage"}
+      ]
+    },
+    {
+      "code": "TF", "name": "Traffic Signal",
+      "subcategories": [
+        {"code": "TF-001", "name": "Signal light out (partial)"},
+        {"code": "TF-002", "name": "Signal fully dark"},
+        {"code": "TF-003", "name": "Signal knocked down"},
+        {"code": "TF-004", "name": "Signal arm bent / damaged"},
+        {"code": "TF-005", "name": "Pedestrian signal faulty"},
+        {"code": "TF-006", "name": "Signal timing issue"}
+      ]
+    },
+    {
+      "code": "DR", "name": "Drainage",
+      "subcategories": [
+        {"code": "DR-001", "name": "Blocked drain / gully"},
+        {"code": "DR-002", "name": "Collapsed drain"},
+        {"code": "DR-003", "name": "Missing drain cover"},
+        {"code": "DR-004", "name": "Damaged drain cover"},
+        {"code": "DR-005", "name": "Road flooding (drainage failure)"},
+        {"code": "DR-006", "name": "Standing water (non-drain)"}
+      ]
+    },
+    {
+      "code": "MK", "name": "Road Markings",
+      "subcategories": [
+        {"code": "MK-001", "name": "Faded lane markings"},
+        {"code": "MK-002", "name": "Missing pedestrian crossing"},
+        {"code": "MK-003", "name": "Faded stop line"},
+        {"code": "MK-004", "name": "Missing cycle lane marking"},
+        {"code": "MK-005", "name": "Misleading / incorrect marking"}
+      ]
+    },
+    {
+      "code": "SL", "name": "Street Lighting",
+      "subcategories": [
+        {"code": "SL-001", "name": "Light out (single)"},
+        {"code": "SL-002", "name": "Multiple lights out"},
+        {"code": "SL-003", "name": "Damaged pole / leaning"},
+        {"code": "SL-004", "name": "Exposed wiring"},
+        {"code": "SL-005", "name": "Light on during day"}
+      ]
+    },
+    {
+      "code": "SW", "name": "Sidewalk / Footpath",
+      "subcategories": [
+        {"code": "SW-001", "name": "Cracked / uneven paving"},
+        {"code": "SW-002", "name": "Trip hazard (raised slab)"},
+        {"code": "SW-003", "name": "Missing kerb / curb"},
+        {"code": "SW-004", "name": "Overgrown vegetation"},
+        {"code": "SW-005", "name": "Blocked accessibility ramp"},
+        {"code": "SW-006", "name": "Damaged accessibility ramp"}
+      ]
+    },
+    {
+      "code": "ST", "name": "Structures",
+      "subcategories": [
+        {"code": "ST-001", "name": "Bridge surface damage"},
+        {"code": "ST-002", "name": "Guardrail damaged / missing"},
+        {"code": "ST-003", "name": "Retaining wall damage"},
+        {"code": "ST-004", "name": "Manhole cover missing"},
+        {"code": "ST-005", "name": "Manhole cover damaged"},
+        {"code": "ST-006", "name": "Culvert blocked / collapsed"}
+      ]
+    },
+    {
+      "code": "OT", "name": "Other",
+      "subcategories": [
+        {"code": "OT-001", "name": "Debris on road"},
+        {"code": "OT-002", "name": "Dead animal on road"},
+        {"code": "OT-003", "name": "Spilled material"},
+        {"code": "OT-004", "name": "Fallen tree on road"},
+        {"code": "OT-005", "name": "Unclear / unidentifiable"}
+      ]
+    }
+  ]
+}

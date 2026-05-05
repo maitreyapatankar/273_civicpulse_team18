@@ -32,14 +32,38 @@ Retry countdown (2^attempt seconds)
 import json
 import logging
 import os
+from datetime import datetime, timezone
+from typing import Optional
 
 import redis
 from celery import Celery
+from sqlalchemy import func
 
 from shared.db import get_db
-from shared.models import RawReport, Ticket
+from shared.models import Officer, RawReport, Ticket
+
+# ── Category-code prefix → department ────────────────────────────────────────
+# Matches taxonomy.json categories to the five officer departments.
+
+_CATEGORY_DEPT: dict[str, str] = {
+    "RD": "roads",       # Road Surface
+    "SG": "roads",       # Signage
+    "MK": "roads",       # Road Markings
+    "SW": "roads",       # Sidewalk / Footpath
+    "TF": "traffic",     # Traffic Signal
+    "SL": "traffic",     # Street Lighting
+    "DR": "drainage",    # Drainage
+    "ST": "structures",  # Structures & Bridges
+    "OT": "operations",  # Other / catch-all
+}
 
 REDIS_URL = os.environ["REDIS_URL"]
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
 
 celery_app = Celery("worker", broker=REDIS_URL, backend=None)
 celery_app.conf.task_serializer = "json"
@@ -47,6 +71,45 @@ celery_app.conf.accept_content  = ["json"]
 
 _redis = redis.Redis.from_url(REDIS_URL)
 log = logging.getLogger(__name__)
+
+
+def _auto_assign(db, ticket: Ticket, category_code: Optional[str]) -> None:
+    """Assign the ticket to the officer in the matching department with the
+    fewest currently open (unresolved) tickets.  Falls back to any officer
+    if none are configured for that department.  Silently no-ops when the
+    officers table is empty.
+    """
+    dept = _CATEGORY_DEPT.get((category_code or "")[:2], "operations")
+
+    # Count open tickets already assigned per officer name.
+    open_counts: dict[str, int] = dict(
+        db.query(Ticket.assigned_to, func.count(Ticket.id))
+          .filter(Ticket.assigned_to.isnot(None))
+          .filter(Ticket.resolved_at.is_(None))
+          .group_by(Ticket.assigned_to)
+          .all()
+    )
+
+    candidates = (
+        db.query(Officer)
+          .filter(Officer.department == dept)
+          .all()
+    )
+    if not candidates:
+        # Fallback: any officer regardless of department.
+        candidates = db.query(Officer).all()
+
+    if not candidates:
+        log.warning("auto_assign no officers found dept=%s ticket_id=%s", dept, ticket.id)
+        return
+
+    chosen = min(candidates, key=lambda o: open_counts.get(o.name, 0))
+    ticket.assigned_to = chosen.name
+    ticket.assigned_at = datetime.now(timezone.utc)
+    log.info(
+        "auto_assign ticket_id=%s dept=%s officer=%s open_tickets=%s",
+        ticket.id, dept, chosen.name, open_counts.get(chosen.name, 0),
+    )
 
 
 def _publish_event(channel: str, ticket_id: str, report_id: str | None) -> None:
@@ -75,6 +138,7 @@ def _fetch_raw_payload(report_id: str) -> dict:
 @celery_app.task(bind=True, name="worker.tasks.process_report", queue="reports:process")
 def process_report(self, report_id: str):
     """Fetch the raw report, mark it processing, forward payload to AI Core."""
+    log.info("process_report_start report_id=%s", report_id)
     with get_db() as db:
         report = db.get(RawReport, report_id)
         existing_ticket = (
@@ -88,6 +152,7 @@ def process_report(self, report_id: str):
 
     payload["attempt"] = 0
     payload["is_edit"] = existing_ticket is not None
+    log.info("process_report_loaded report_id=%s is_edit=%s", report_id, payload["is_edit"])
     if existing_ticket:
         payload["existing_ticket_id"] = str(existing_ticket.id)
     celery_app.send_task(
@@ -95,6 +160,7 @@ def process_report(self, report_id: str):
         args=[report_id, payload],
         queue="ai_core:process",
     )
+    log.info("process_report_forwarded report_id=%s queue=ai_core:process", report_id)
 
 
 # ── Task 2 ────────────────────────────────────────────────────────────────────
@@ -102,43 +168,97 @@ def process_report(self, report_id: str):
 
 @celery_app.task(name="worker.tasks.handle_ai_result", queue="ai_core:results")
 def handle_ai_result(report_id: str, enriched: dict):
-    """Write enriched ticket to DB, mark report done, publish SMS notification."""
+    """Write enriched ticket to DB, mark report done, publish SSE notification.
+
+    Duplicate path: creates a shadow ticket (duplicate_of = master) AND updates
+    the master ticket's urgency_score / cluster_count with the new cluster state.
+    """
+    is_dup    = bool(enriched.get("is_duplicate"))
+    master_id = enriched.get("master_ticket_id")
+    log.info(
+        "ai_result_start report_id=%s is_duplicate=%s master_id=%s",
+        report_id,
+        is_dup,
+        master_id,
+    )
     with get_db() as db:
+        # Edit path: a ticket already exists for this raw_report_id (report was re-queued).
         existing = (
             db.query(Ticket)
               .filter(Ticket.raw_report_id == report_id)
               .first()
         )
 
-        duplicate_of = enriched.get("duplicate_of")
-        if duplicate_of and str(duplicate_of) in {str(report_id), str(existing.id) if existing else ""}:
-            duplicate_of = None
-
         if existing:
-            existing.issue_type = enriched.get("issue_type")
-            existing.severity = enriched.get("severity")
-            existing.confidence = enriched.get("confidence")
-            existing.ai_reasoning = enriched.get("ai_reasoning")
-            existing.urgency_score = enriched.get("urgency_score")
-            existing.urgency_factors = enriched.get("urgency_factors")
-            existing.duplicate_of = duplicate_of
-            existing.work_order = enriched.get("work_order")
-            enriched_cluster = enriched.get("cluster_count") or 1
-            existing.cluster_count = max(existing.cluster_count or 1, enriched_cluster)
+            existing.category_code             = enriched.get("category_code")
+            existing.category_name             = enriched.get("category_name")
+            existing.subcategory_code          = enriched.get("subcategory_code")
+            existing.subcategory_name          = enriched.get("subcategory_name")
+            existing.severity                  = enriched.get("severity")
+            existing.confidence                = enriched.get("confidence")
+            existing.ai_reasoning              = enriched.get("urgency_reasoning")
+            existing.image_text_conflict       = enriched.get("image_text_conflict", False)
+            existing.image_classification_hint = enriched.get("image_classification_hint") or None
+            existing.needs_review              = enriched.get("needs_review", False)
+            existing.urgency_score             = enriched.get("urgency_score")
+            existing.urgency_factors           = dict(enriched.get("urgency_factors") or {})
+            existing.duplicate_of              = master_id
+            enriched_cluster                   = enriched.get("cluster_count") or 1
+            existing.cluster_count             = max(existing.cluster_count or 1, enriched_cluster)
+            # Auto-assign only if not yet assigned (preserve manual assignments).
+            if not existing.assigned_to:
+                _auto_assign(db, existing, enriched.get("category_code"))
             ticket_id = str(existing.id)
         else:
-            enriched_copy = dict(enriched)
-            enriched_copy["duplicate_of"] = duplicate_of
-            ticket = Ticket(**enriched_copy, raw_report_id=report_id)
+            ticket = Ticket(
+                raw_report_id             = report_id,
+                category_code             = enriched.get("category_code"),
+                category_name             = enriched.get("category_name"),
+                subcategory_code          = enriched.get("subcategory_code"),
+                subcategory_name          = enriched.get("subcategory_name"),
+                severity                  = enriched.get("severity"),
+                confidence                = enriched.get("confidence"),
+                ai_reasoning              = enriched.get("urgency_reasoning"),
+                image_text_conflict       = enriched.get("image_text_conflict", False),
+                image_classification_hint = enriched.get("image_classification_hint") or None,
+                needs_review              = enriched.get("needs_review", False),
+                urgency_score             = enriched.get("urgency_score"),
+                urgency_factors           = dict(enriched.get("urgency_factors") or {}),
+                cluster_count             = enriched.get("cluster_count", 1),
+                duplicate_of              = master_id,
+            )
             db.add(ticket)
+            db.flush()  # populate ticket.id before _auto_assign reads it
+            # Duplicates are shadow tickets — assignment lives on the master.
+            if not is_dup:
+                _auto_assign(db, ticket, enriched.get("category_code"))
             ticket_id = str(ticket.id)
 
-        db.query(RawReport).filter_by(id=report_id) \
-            .update({"status": "done"})
+        # For duplicates, propagate the re-scored urgency back to the master ticket
+        # so dispatchers see the updated priority as the cluster grows.
+        if is_dup and master_id:
+            master = db.get(Ticket, master_id)
+            if master:
+                master.urgency_score   = enriched.get("urgency_score")
+                master.urgency_factors = dict(enriched.get("urgency_factors") or {})
+                master.cluster_count   = enriched.get("cluster_count", (master.cluster_count or 1) + 1)
+
+        db.query(RawReport).filter_by(id=report_id).update({"status": "done"})
         db.commit()
 
-    channel = "notify:ticket_ready" if not existing else "notify:ticket_updated"
-    _publish_event(channel, ticket_id, str(report_id))
+    # Notify on the master ticket ID when a duplicate comes in so the dashboard
+    # refreshes the right row.
+    notify_id = master_id if (is_dup and master_id) else ticket_id
+    channel   = "notify:ticket_ready" if not existing and not is_dup else "notify:ticket_updated"
+    _publish_event(channel, notify_id, str(report_id))
+    log.info(
+        "ai_result_done report_id=%s ticket_id=%s notify_id=%s channel=%s cluster_count=%s",
+        report_id,
+        ticket_id,
+        notify_id,
+        channel,
+        enriched.get("cluster_count") or 1,
+    )
 
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────
@@ -148,6 +268,13 @@ def handle_ai_result(report_id: str, enriched: dict):
 def handle_ai_failure(report_id: str, error: str, attempt: int):
     """Retry the pipeline with exponential backoff, or send to DLQ after 3 attempts."""
     if attempt < 3:
+        log.warning(
+            "ai_failure_retry report_id=%s attempt=%s next_attempt=%s error=%s",
+            report_id,
+            attempt,
+            attempt + 1,
+            error,
+        )
         payload = _fetch_raw_payload(report_id)
         payload["attempt"] = attempt + 1
 
@@ -158,6 +285,7 @@ def handle_ai_failure(report_id: str, error: str, attempt: int):
             countdown=2 ** attempt,         # 1s → 2s → 4s
         )
     else:
+        log.error("ai_failure_dlq report_id=%s attempt=%s error=%s", report_id, attempt, error)
         with get_db() as db:
             db.query(RawReport).filter_by(id=report_id) \
                 .update({"status": "failed"})

@@ -120,9 +120,15 @@ async def get_ticket_status(ticket_id: UUID):
             id=raw_report.id,
             status=derive_status(raw_report.status, ticket),
             issue_type=ticket.issue_type if ticket else None,
+            category_code=ticket.category_code if ticket else None,
+            category_name=ticket.category_name if ticket else None,
+            subcategory_code=ticket.subcategory_code if ticket else None,
+            subcategory_name=ticket.subcategory_name if ticket else None,
             urgency_score=ticket.urgency_score if ticket else None,
             duplicate_of=ticket.duplicate_of if ticket else None,
             cluster_count=ticket.cluster_count if ticket else 1,
+            image_text_conflict=ticket.image_text_conflict if ticket else None,
+            needs_review=ticket.needs_review if ticket else None,
             reporter_phone=raw_report.reporter_phone,
             assigned_to=ticket.assigned_to if ticket else None,
             assigned_at=ticket.assigned_at if ticket else None,
@@ -154,6 +160,8 @@ async def get_ticket_detail(
 
         return TicketDetailResponse(
             **_ticket_to_response(ticket, raw_report).model_dump(),
+            text=raw_report.text if raw_report else None,
+            image_url=raw_report.image_url if raw_report else None,
             comments=[TicketCommentResponse.model_validate(c) for c in comments],
         )
 

@@ -6,18 +6,8 @@ interface AppNavProps {
   activeRole?: Role
 }
 
-function resolveRoleLink(role: Role): string {
-  if (role === 'citizen') {
-    return localStorage.getItem('citizen_token')
-      ? '/citizen/dashboard'
-      : '/citizen/login'
-  }
-  if (role === 'officer') {
-    return localStorage.getItem('jwt_token')
-      ? '/officer/dashboard'
-      : '/officer/login'
-  }
-  return '/'
+function staffLink(): string {
+  return localStorage.getItem('jwt_token') ? '/staff' : '/officer/login'
 }
 
 export default function AppNav({ activeRole = 'public' }: AppNavProps) {
@@ -42,6 +32,18 @@ export default function AppNav({ activeRole = 'public' }: AppNavProps) {
                 className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
               >
                 Home
+              </Link>
+              <Link
+                to="/report"
+                className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
+              >
+                Report issue
+              </Link>
+              <Link
+                to={staffLink()}
+                className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
+              >
+                Staff
               </Link>
             </div>
           </div>

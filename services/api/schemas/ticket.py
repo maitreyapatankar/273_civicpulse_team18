@@ -10,11 +10,18 @@ class TicketResponse(BaseModel):
     id:                  UUID
     raw_report_id:       Optional[UUID]
     issue_type:          Optional[str]          # pothole|flooding|sinkhole|crack|sign_damage|other
+    category_code:       Optional[str] = None
+    category_name:       Optional[str] = None
+    subcategory_code:    Optional[str] = None
+    subcategory_name:    Optional[str] = None
     severity:            Optional[int]           # 1-5
     urgency_score:       Optional[float]         # 1.0-5.0
     urgency_factors:     Optional[Dict[str, Any]]
     ai_reasoning:        Optional[str]
     confidence:          Optional[float]         # 0.0-1.0; < 0.70 → needs human review
+    image_text_conflict:       bool = False
+    image_classification_hint: Optional[str] = None
+    needs_review:              bool = False
     duplicate_of:        Optional[UUID]
     cluster_count:       int = 1
     work_order:          Optional[Dict[str, Any]]
@@ -46,9 +53,15 @@ class TicketStatusResponse(BaseModel):
     id:             UUID
     status:         str
     issue_type:     Optional[str]
+    category_code:  Optional[str] = None
+    category_name:  Optional[str] = None
+    subcategory_code: Optional[str] = None
+    subcategory_name: Optional[str] = None
     urgency_score:  Optional[float]
     duplicate_of:   Optional[UUID]
     cluster_count:  int = 1
+    image_text_conflict: Optional[bool] = None
+    needs_review:        Optional[bool] = None
     reporter_phone: Optional[str]
     assigned_to:    Optional[str] = None
     assigned_at:    Optional[datetime] = None
@@ -81,4 +94,6 @@ class TicketCommentResponse(BaseModel):
 
 
 class TicketDetailResponse(TicketResponse):
+    text: Optional[str] = None
+    image_url: Optional[str] = None
     comments: List[TicketCommentResponse]

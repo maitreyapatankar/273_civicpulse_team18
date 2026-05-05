@@ -54,11 +54,18 @@ export interface Ticket {
   id:                   string
   raw_report_id:        string | null
   issue_type:           IssueType | null
+  category_code:        string | null
+  category_name:        string | null
+  subcategory_code:     string | null
+  subcategory_name:     string | null
   severity:             number | null     // 1–5
   urgency_score:        number | null     // 1.0–5.0
   urgency_factors:      UrgencyFactors | null
   ai_reasoning:         string | null
   confidence:           number | null     // 0.0–1.0; < 0.70 → needs review
+  image_text_conflict:       boolean
+  image_classification_hint: string | null
+  needs_review:              boolean
   duplicate_of:         string | null
   cluster_count:        number
   work_order:           WorkOrder | null
@@ -81,9 +88,15 @@ export interface TicketStatusResponse {
   id:            string
   status:        ReportStatus
   issue_type:    IssueType | null
+  category_code?: string | null
+  category_name?: string | null
+  subcategory_code?: string | null
+  subcategory_name?: string | null
   urgency_score: number | null
   duplicate_of:  string | null
   cluster_count: number
+  image_text_conflict?: boolean | null
+  needs_review?: boolean | null
   assigned_to:   string | null
   assigned_at:   string | null
   resolved_at:   string | null
@@ -103,15 +116,6 @@ export interface TicketOverride {
   is_public?:     boolean
   assign_to?:     string
   resolve?:       boolean
-}
-
-export interface CitizenAuthResponse {
-  access_token: string
-  token_type: 'bearer'
-  role: 'citizen'
-  citizen_id: string
-  email: string
-  name: string
 }
 
 export interface OfficerAuthResponse {
@@ -167,5 +171,7 @@ export interface TicketCommentResponse {
 }
 
 export interface TicketDetailResponse extends Ticket {
+  text?: string | null
+  image_url?: string | null
   comments: TicketCommentResponse[]
 }

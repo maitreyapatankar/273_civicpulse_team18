@@ -30,7 +30,11 @@ export default function OfficerLogin() {
         password,
       })
       localStorage.setItem('jwt_token', data.access_token)
-      navigate('/officer/dashboard', { replace: true })
+      if (data.name) localStorage.setItem('officer_name', data.name)
+      if (data.email) localStorage.setItem('officer_email', data.email)
+      if (data.role) localStorage.setItem('officer_role', data.role)
+      if (data.officer_id) localStorage.setItem('officer_id', data.officer_id)
+      navigate('/staff', { replace: true })
     } catch (error) {
       setError(extractApiError(error))
     } finally {

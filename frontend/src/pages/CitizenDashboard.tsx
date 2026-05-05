@@ -1,12 +1,43 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import api from '../api/client'
-import { CitizenTicketDetail, CitizenTicketSummary, ReportSubmitted } from '../api/types'
+import { ReportSubmitted } from '../api/types'
 import AppNav from '../components/AppNav'
-import { useTicketStream } from '../hooks/useTicketStream'
+
+interface StatusResponse {
+  id: string
+  status: 'queued' | 'processing' | 'open' | 'in_progress' | 'resolved' | 'failed'
+  issue_type: string | null
+  urgency_score: number | null
+  duplicate_of: string | null
+  cluster_count: number
+  assigned_to: string | null
+  assigned_at: string | null
+  resolved_at: string | null
+  created_at: string
+}
+
+interface ReceiptSnapshot {
+  title: string
+  details: string
+  address: string
+  lat: string
+  lng: string
+  phone: string
+}
+
+const TERMINAL = new Set(['resolved', 'failed'])
+
+function formatDate(iso?: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -34,7 +65,6 @@ function MapRecenter({ center }: { center: [number, number] }) {
 
 export default function CitizenDashboard() {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const { ticketId } = useParams<{ ticketId: string }>()
   const [title, setTitle] = useState('')
   const [details, setDetails] = useState('')
@@ -49,57 +79,46 @@ export default function CitizenDashboard() {
   const [addressLoading, setAddressLoading] = useState(false)
   const [addressError, setAddressError] = useState('')
   const [searchingAddress, setSearchingAddress] = useState(false)
-  const [selectedTicketId, setSelectedTicketId] = useState('')
-  const [editMode, setEditMode] = useState(false)
-  const [editNotes, setEditNotes] = useState('')
-  const [editMessage, setEditMessage] = useState('')
-  const [editSaving, setEditSaving] = useState(false)
-  const [editError, setEditError] = useState('')
+  const [addressResolved, setAddressResolved] = useState(false)
   const [mapCenter, setMapCenter] = useState<[number, number]>([37.3387, -121.8853])
-
-  const { data: tickets = [], isLoading: ticketsLoading } = useQuery<CitizenTicketSummary[]>({
-    queryKey: ['citizen-tickets'],
-    queryFn: () => api.get('/citizens/tickets').then((r) => r.data),
-  })
-
-  const { data: ticketDetail } = useQuery<CitizenTicketDetail>({
-    queryKey: ['citizen-ticket', selectedTicketId],
-    queryFn: () => api.get(`/citizens/tickets/${selectedTicketId}`).then((r) => r.data),
-    enabled: Boolean(selectedTicketId),
-  })
-
-  const selectedTicket = useMemo(
-    () => tickets.find((ticket) => ticket.report_id === selectedTicketId) ?? null,
-    [selectedTicketId, tickets]
-  )
+  const [locating, setLocating] = useState(true)
 
   const parsedLat = Number(lat)
   const parsedLng = Number(lng)
-  const markerPosition =
+  const markerPosition: [number, number] | null =
     Number.isFinite(parsedLat) && Number.isFinite(parsedLng)
       ? [parsedLat, parsedLng]
       : null
 
-  useEffect(() => {
-    if (ticketId) {
-      setSelectedTicketId(ticketId)
+  const { data: ticketStatus, isLoading, isError } = useQuery<StatusResponse>({
+    queryKey: ['ticket-status', ticketId],
+    queryFn: () => api.get(`/tickets/${ticketId}/status`).then((r) => r.data),
+    refetchInterval: (query) =>
+      TERMINAL.has(query.state.data?.status ?? '') ? false : 60_000,
+    enabled: Boolean(ticketId),
+  })
+
+  const receipt = useMemo<ReceiptSnapshot | null>(() => {
+    if (!ticketId) return null
+    try {
+      const raw = localStorage.getItem(`report_receipt_${ticketId}`)
+      return raw ? (JSON.parse(raw) as ReceiptSnapshot) : null
+    } catch {
+      return null
     }
   }, [ticketId])
 
-  useTicketStream({
-    path: `/events/citizen/${selectedTicketId}`,
-    enabled: Boolean(selectedTicketId),
-    onEvent: () => {
-      queryClient.invalidateQueries({ queryKey: ['citizen-tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['citizen-ticket', selectedTicketId] })
-    },
-  })
-
   useEffect(() => {
-    if (markerPosition) {
-      setMapCenter(markerPosition)
-    }
-  }, [markerPosition])
+    if (!navigator.geolocation) { setLocating(false); return }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setMapCenter([pos.coords.latitude, pos.coords.longitude])
+        setLocating(false)
+      },
+      () => setLocating(false),
+      { timeout: 6000 },
+    )
+  }, [])
 
   async function handleMapPick(pickedLat: number, pickedLng: number) {
     setLat(pickedLat.toFixed(6))
@@ -119,8 +138,12 @@ export default function CitizenDashboard() {
       const data = await response.json()
       if (data?.display_name) {
         setAddress(data.display_name)
+        setAddressResolved(true)
+      } else {
+        setAddressResolved(false)
       }
     } catch {
+      setAddressResolved(false)
       setAddressError('Unable to fetch address for this location.')
     } finally {
       setAddressLoading(false)
@@ -133,11 +156,17 @@ export default function CitizenDashboard() {
     setSubmitError('')
     setSubmitResult(null)
 
+    if (!addressResolved || !lat || !lng) {
+      setSubmitError('Please search and confirm a valid address before submitting.')
+      setSubmitting(false)
+      return
+    }
+
     const formData = new FormData()
     formData.append('text', `${title}\n\n${details}`)
     formData.append('lat', lat)
     formData.append('lng', lng)
-    if (address) formData.append('address', address)
+    formData.append('address', address)
     if (phone) formData.append('reporter_phone', phone)
     formData.append('source', 'app')
     if (image) formData.append('image', image)
@@ -147,7 +176,10 @@ export default function CitizenDashboard() {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setSubmitResult(data)
-      setSelectedTicketId(data.ticket_id)
+      localStorage.setItem(
+        `report_receipt_${data.ticket_id}`,
+        JSON.stringify({ title, details, address, lat, lng, phone })
+      )
       setTitle('')
       setDetails('')
       setAddress('')
@@ -155,7 +187,8 @@ export default function CitizenDashboard() {
       setLng('')
       setPhone('')
       setImage(null)
-      navigate(`/citizen/tickets/${data.ticket_id}`, { replace: true })
+      setAddressResolved(false)
+      navigate(`/report/${data.ticket_id}`, { replace: true })
     } catch {
       setSubmitError('We could not submit your complaint. Please try again.')
     } finally {
@@ -170,6 +203,7 @@ export default function CitizenDashboard() {
     }
     setSearchingAddress(true)
     setAddressError('')
+    setAddressResolved(false)
     try {
       const response = await fetch(
         `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(address)}`,
@@ -186,6 +220,10 @@ export default function CitizenDashboard() {
           setLat(foundLat.toFixed(6))
           setLng(foundLng.toFixed(6))
           setMapCenter([foundLat, foundLng])
+          if (results[0].display_name) {
+            setAddress(results[0].display_name)
+          }
+          setAddressResolved(true)
         }
       } else {
         setAddressError('No results found for that address.')
@@ -197,59 +235,101 @@ export default function CitizenDashboard() {
     }
   }
 
-  async function handleEditSave() {
-    if (!selectedTicketId) return
-    setEditSaving(true)
-    setEditError('')
-    setEditMessage('')
+  if (ticketId) {
+    return (
+      <div className="min-h-screen bg-grid">
+        <AppNav activeRole="public" />
+        <div className="mx-auto max-w-3xl px-6 pb-10">
+          <header className="flex flex-col gap-4 text-center mt-6">
+            <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Report submitted</p>
+            <h1 className="font-display text-3xl sm:text-4xl text-slate-900">
+              Your complaint is in the system.
+            </h1>
+            <p className="text-sm text-slate-500">
+              Save this ticket ID to track status updates.
+            </p>
+            <p className="text-xs text-slate-500 font-mono break-all">{ticketId}</p>
+          </header>
 
-    const formData = new FormData()
-    if (editNotes.trim()) {
-      formData.append('text', editNotes.trim())
-    }
-    if (lat) formData.append('lat', lat)
-    if (lng) formData.append('lng', lng)
-    if (address) formData.append('address', address)
+          <div className="mt-8 glass-card rounded-3xl p-6 shadow-xl space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Status</p>
+                {isLoading && <p className="text-sm text-slate-500 mt-1">Loading…</p>}
+                {isError && <p className="text-sm text-rose-600 mt-1">Unable to fetch status.</p>}
+                {ticketStatus && (
+                  <p className="text-sm font-semibold text-slate-900 mt-1">
+                    {ticketStatus.status}
+                  </p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Submitted</p>
+                <p className="text-sm text-slate-700 mt-1">
+                  {formatDate(ticketStatus?.created_at)}
+                </p>
+              </div>
+            </div>
 
-    if (!Array.from(formData.keys()).length) {
-      setEditError('Add at least one change before saving.')
-      setEditSaving(false)
-      return
-    }
+            {receipt && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Issue</p>
+                  <p className="text-sm text-slate-900 font-semibold mt-1">{receipt.title}</p>
+                  <p className="text-sm text-slate-600 mt-1">{receipt.details}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Address</p>
+                  <p className="text-sm text-slate-700 mt-1">{receipt.address}</p>
+                </div>
+              </div>
+            )}
 
-    try {
-      const { data } = await api.patch(`/reports/${selectedTicketId}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
-      setEditMessage('Update submitted. We are reprocessing your report.')
-      setEditMode(false)
-      setSelectedTicketId(data.ticket_id)
-    } catch {
-      setEditError('Could not update the report. Please try again.')
-    } finally {
-      setEditSaving(false)
-      setTimeout(() => setEditMessage(''), 4000)
-    }
+            {!receipt && (
+              <p className="text-sm text-slate-500">
+                Ticket details are stored on your device after submission. If you cleared
+                storage, use the tracker link below.
+              </p>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Link
+                to={`/track/${ticketId}`}
+                className="rounded-2xl bg-slate-900 text-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-800 transition text-center"
+              >
+                Track this ticket
+              </Link>
+              <Link
+                to="/report"
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition text-center"
+              >
+                Submit another report
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="min-h-screen bg-grid">
-      <AppNav activeRole="citizen" />
-      <div className="mx-auto max-w-6xl px-6 pb-10">
+      <AppNav activeRole="public" />
+      <div className="mx-auto max-w-5xl px-6 pb-10">
         <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Citizen dashboard</p>
+            <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Anonymous report</p>
             <h1 className="font-display text-3xl sm:text-4xl text-slate-900 mt-3">
-              Report, track, and stay informed.
+              Submit a complaint without an account.
             </h1>
           </div>
         </header>
 
-        <div className="mt-8 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+        <div className="mt-8">
           <form onSubmit={handleSubmit} className="glass-card rounded-3xl p-6 shadow-xl">
-            <h2 className="text-xl font-semibold text-slate-900">Submit a new complaint</h2>
+            <h2 className="text-xl font-semibold text-slate-900">Report an issue</h2>
             <p className="text-sm text-slate-500 mt-1">
-              Describe the issue and we will route it to the right crew.
+              Address and issue details are required. Photo is optional.
             </p>
 
             <div className="mt-6 space-y-4">
@@ -277,12 +357,17 @@ export default function CitizenDashboard() {
               </div>
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Location</label>
+                  <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Address (required)</label>
                   <input
                     type="text"
                     required
                     value={address}
-                    onChange={(e) => setAddress(e.target.value)}
+                    onChange={(e) => {
+                      setAddress(e.target.value)
+                      setAddressResolved(false)
+                      setLat('')
+                      setLng('')
+                    }}
                     placeholder="Street or landmark"
                     className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
                   />
@@ -292,8 +377,11 @@ export default function CitizenDashboard() {
                     disabled={searchingAddress}
                     className="mt-2 text-xs font-semibold text-cyan-700 hover:text-cyan-800 disabled:opacity-60"
                   >
-                    {searchingAddress ? 'Searching…' : 'Find on map'}
+                    {searchingAddress ? 'Searching…' : 'Search address'}
                   </button>
+                  {addressResolved && (
+                    <p className="text-xs text-emerald-600 mt-2">Address confirmed.</p>
+                  )}
                 </div>
                 <div>
                   <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Photo (optional)</label>
@@ -308,30 +396,30 @@ export default function CitizenDashboard() {
                 <div>
                   <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Latitude</label>
                   <input
-                    type="number"
-                    step="any"
+                    type="text"
+                    readOnly
                     required
                     value={lat}
-                    onChange={(e) => setLat(e.target.value)}
-                    placeholder="37.7749"
-                    className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    placeholder="Auto-filled"
+                    className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-500 bg-slate-50"
                   />
                 </div>
                 <div>
                   <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Longitude</label>
                   <input
-                    type="number"
-                    step="any"
+                    type="text"
+                    readOnly
                     required
                     value={lng}
-                    onChange={(e) => setLng(e.target.value)}
-                    placeholder="-122.4194"
-                    className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    placeholder="Auto-filled"
+                    className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-500 bg-slate-50"
                   />
                 </div>
               </div>
               <div>
-                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">Pick on map</label>
+                <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                  Pick on map{locating ? ' — locating you…' : ''}
+                </label>
                 <div className="mt-2 h-48 rounded-2xl overflow-hidden border border-slate-200">
                   <MapContainer
                     center={mapCenter}
@@ -389,148 +477,7 @@ export default function CitizenDashboard() {
               </div>
             )}
           </form>
-
-          <div className="glass-card rounded-3xl p-6 shadow-xl">
-            <h2 className="text-xl font-semibold text-slate-900">Your current tickets</h2>
-            <p className="text-sm text-slate-500 mt-1">
-              Synced with your latest reports.
-            </p>
-
-            <div className="mt-6 space-y-4">
-              {ticketsLoading && (
-                <p className="text-sm text-slate-500">Loading tickets…</p>
-              )}
-              {!ticketsLoading && tickets.length === 0 && (
-                <p className="text-sm text-slate-500">No tickets yet.</p>
-              )}
-              {tickets.map((ticket) => (
-                <div
-                  key={ticket.report_id}
-                  className={`rounded-2xl border px-4 py-3 cursor-pointer transition ${
-                    selectedTicketId === ticket.report_id
-                      ? 'border-cyan-300 bg-cyan-50'
-                      : 'border-slate-200 bg-white hover:bg-slate-50'
-                  }`}
-                  onClick={() => setSelectedTicketId(ticket.report_id)}
-                >
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold text-slate-900">
-                      {ticket.issue_type ? ticket.issue_type.replace('_', ' ') : 'New report'}
-                    </p>
-                    <span className="text-xs text-slate-500">
-                      {ticket.report_id.slice(0, 8)}
-                    </span>
-                  </div>
-                  <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-                    <span>{ticket.status}</span>
-                    <span>Updated {new Date(ticket.updated_at).toLocaleString()}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
-
-        {selectedTicket && ticketDetail && (
-          <div className="mt-6 glass-card rounded-3xl p-6 shadow-xl">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Ticket details</p>
-                <h3 className="text-xl font-semibold text-slate-900 mt-2">
-                  {selectedTicket.issue_type
-                    ? selectedTicket.issue_type.replace('_', ' ')
-                    : 'New report'}
-                </h3>
-                <p className="text-sm text-slate-500 mt-1">{ticketDetail.address}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="inline-flex items-center rounded-full bg-slate-900 text-white px-3 py-1 text-xs font-semibold">
-                  {ticketDetail.status}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setEditMode((prev) => !prev)}
-                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  {editMode ? 'Close edit' : 'Edit report'}
-                </button>
-              </div>
-            </div>
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <div>
-                {editMode ? (
-                  <div className="space-y-3">
-                    <label className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                      Notes
-                    </label>
-                    <textarea
-                      rows={4}
-                      value={editNotes}
-                      onChange={(e) => setEditNotes(e.target.value)}
-                      placeholder="Describe updates to your report"
-                      className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                    />
-                    {editError && (
-                      <p className="text-xs text-rose-600">{editError}</p>
-                    )}
-                    <button
-                      type="button"
-                      onClick={handleEditSave}
-                      disabled={editSaving}
-                      className="rounded-2xl bg-slate-900 text-white px-4 py-2 text-sm font-semibold hover:bg-slate-800 disabled:opacity-60"
-                    >
-                      {editSaving ? 'Saving…' : 'Save changes'}
-                    </button>
-                    {editMessage && (
-                      <p className="text-xs text-slate-500">{editMessage}</p>
-                    )}
-                  </div>
-                ) : (
-                  ticketDetail.text && (
-                    <p className="text-sm text-slate-700 leading-relaxed">
-                      {ticketDetail.text}
-                    </p>
-                  )
-                )}
-                {ticketDetail.image_url && (
-                  <div className="mt-4 rounded-2xl overflow-hidden border border-slate-200">
-                    <img
-                      src={ticketDetail.image_url}
-                      alt="Submitted issue"
-                      className="w-full h-48 object-cover"
-                    />
-                  </div>
-                )}
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Department updates</p>
-                {ticketDetail.department_updates.length === 0 ? (
-                  <p className="text-sm text-slate-500 mt-3">No updates yet.</p>
-                ) : (
-                  <ul className="mt-3 space-y-2 text-sm text-slate-600">
-                    {ticketDetail.department_updates.map((update) => (
-                      <li key={update.id} className="flex gap-2">
-                        <span className="mt-2 h-1.5 w-1.5 rounded-full bg-cyan-600" />
-                        <span>{update.message}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <p className="text-xs text-slate-400 mt-4">
-                  Updated {new Date(selectedTicket.updated_at).toLocaleString()}
-                </p>
-                {ticketDetail.ticket_id && (
-                  <Link
-                    to={`/track/${ticketDetail.ticket_id}`}
-                    className="mt-3 inline-flex text-xs font-semibold text-cyan-700 hover:text-cyan-800"
-                  >
-                    View public tracker
-                  </Link>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

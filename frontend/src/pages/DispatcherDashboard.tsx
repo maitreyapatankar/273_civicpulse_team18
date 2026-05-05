@@ -441,9 +441,45 @@ export default function DispatcherDashboard() {
                 </div>
               )}
 
+              {/* ── Customer submission ── */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">
+                  Customer report
+                </h3>
+                {detailQuery.isLoading && (
+                  <p className="text-xs text-slate-400 animate-pulse">Loading submission…</p>
+                )}
+                {detailQuery.data?.text && (
+                  <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+                    {detailQuery.data.text}
+                  </p>
+                )}
+                {!detailQuery.isLoading && !detailQuery.data?.text && (
+                  <p className="text-xs text-slate-400">No text submitted.</p>
+                )}
+                {detailQuery.data?.image_url && (
+                  <div className="rounded-xl overflow-hidden border border-slate-200">
+                    <img
+                      src={detailQuery.data.image_url}
+                      alt="Customer submitted photo"
+                      className="w-full max-h-56 object-cover"
+                    />
+                  </div>
+                )}
+                {detailQuery.data?.image_text_conflict && (
+                  <div className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">
+                    <span className="font-semibold">Image/text conflict —</span>{' '}
+                    {detailQuery.data.image_classification_hint
+                      ? `image suggests: ${detailQuery.data.image_classification_hint}`
+                      : 'AI classification trusted the image over the text.'}
+                  </div>
+                )}
+              </div>
+
+              {/* ── AI analysis ── */}
               <div className="rounded-2xl border border-slate-200 bg-white p-4">
                 <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em] mb-2">
-                  AI reasoning
+                  AI urgency reasoning
                 </h3>
                 <p className="text-sm text-slate-700 leading-relaxed">
                   {selected.ai_reasoning || '—'}

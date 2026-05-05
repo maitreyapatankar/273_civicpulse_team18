@@ -49,11 +49,18 @@ class Ticket(Base):
     id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     raw_report_id       = Column(UUID(as_uuid=True), ForeignKey("raw_reports.id"))
     issue_type          = Column(Text)              # pothole|flooding|sinkhole|crack|sign_damage|other
+    category_code       = Column(Text)
+    category_name       = Column(Text)
+    subcategory_code    = Column(Text)
+    subcategory_name    = Column(Text)
     severity            = Column(Integer)           # 1-5
     urgency_score       = Column(Float)             # 1.0-5.0
     urgency_factors     = Column(JSONB)             # {safety_risk, traffic_impact, cluster_volume, days_open}
     ai_reasoning        = Column(Text)
     confidence          = Column(Float)             # 0.0-1.0; below 0.70 flags for human review
+    image_text_conflict       = Column(Boolean, default=False)
+    image_classification_hint = Column(Text)
+    needs_review              = Column(Boolean, default=False)
     duplicate_of        = Column(UUID(as_uuid=True), ForeignKey("tickets.id"))
     cluster_count       = Column(Integer, default=1)
     work_order          = Column(JSONB)             # {crew_type, materials[], est_hours, notes}
@@ -84,6 +91,7 @@ class Officer(Base):
     email         = Column(Text, nullable=False, unique=True)
     password_hash = Column(Text, nullable=False)
     role          = Column(Text, nullable=False, default="officer")
+    department    = Column(Text)   # roads | traffic | drainage | structures | operations
     created_at    = Column(TIMESTAMP(timezone=True), default=_now)
 
 

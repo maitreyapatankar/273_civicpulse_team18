@@ -31,42 +31,30 @@ export default function Landing() {
               </p>
               <div className="mt-4 grid gap-4">
                 <div className="rounded-3xl border border-slate-200 bg-white p-4">
-                  <p className="text-sm font-semibold text-slate-900">For citizens</p>
+                  <p className="text-sm font-semibold text-slate-900">For residents</p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Submit new complaints and monitor updates in real time.
+                    Submit a complaint anonymously and get a tracking link instantly.
                   </p>
                   <div className="mt-4 flex flex-col sm:flex-row gap-2">
                     <Link
-                      to="/citizen/login"
+                      to="/report"
                       className="rounded-2xl bg-slate-900 text-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-800 transition text-center"
                     >
-                      Citizen login
-                    </Link>
-                    <Link
-                      to="/citizen/signup"
-                      className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition text-center"
-                    >
-                      Citizen sign up
+                      Submit complaint
                     </Link>
                   </div>
                 </div>
                 <div className="rounded-3xl border border-cyan-200 bg-cyan-50 p-4">
-                  <p className="text-sm font-semibold text-cyan-900">For officers</p>
+                  <p className="text-sm font-semibold text-cyan-900">For staff</p>
                   <p className="text-xs text-cyan-800 mt-1">
                     Review AI-prioritized tickets and dispatch crews faster.
                   </p>
                   <div className="mt-4 flex flex-col sm:flex-row gap-2">
                     <Link
-                      to="/officer/login"
+                      to="/staff"
                       className="rounded-2xl bg-cyan-700 text-white px-4 py-2.5 text-xs font-semibold hover:bg-cyan-800 transition text-center"
                     >
-                      Officer login
-                    </Link>
-                    <Link
-                      to="/officer/signup"
-                      className="rounded-2xl border border-cyan-200 bg-white px-4 py-2.5 text-xs font-semibold text-cyan-900 hover:bg-cyan-100 transition text-center"
-                    >
-                      Officer sign up
+                      Staff login
                     </Link>
                   </div>
                 </div>

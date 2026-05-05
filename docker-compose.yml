@@ -25,7 +25,7 @@ services:
   ai_core:
     build: ./services/ai_core
     command: celery -A consumer worker --concurrency=4 -Q ai_core:process
-    depends_on: [redis]
+    depends_on: [redis, postgres]
     env_file: .env
     # No ports — pure queue consumer, no HTTP server
 
@@ -35,7 +35,7 @@ services:
       dockerfile: services/worker/Dockerfile
     command: >
       celery -A tasks worker --concurrency=4
-      -Q reports,ai_core:results,ai_core:failed
+      -Q reports:process,ai_core:results,ai_core:failed
     depends_on: [redis, postgres]
     env_file: .env
     # No ports — pure queue consumer

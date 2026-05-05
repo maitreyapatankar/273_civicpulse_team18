@@ -4,14 +4,12 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import DispatcherDashboard from './pages/DispatcherDashboard'
 import CitizenTracker from './pages/CitizenTracker'
-import Login from './pages/Login'
-import PrivateRoute, { CitizenRoute } from './components/PrivateRoute'
+import PrivateRoute from './components/PrivateRoute'
 import Landing from './pages/Landing'
-import CitizenLogin from './pages/CitizenLogin'
-import CitizenSignup from './pages/CitizenSignup'
 import OfficerLogin from './pages/OfficerLogin'
 import OfficerSignup from './pages/OfficerSignup'
 import CitizenDashboard from './pages/CitizenDashboard'
+import StaffDashboard from './pages/StaffDashboard'
 import 'leaflet/dist/leaflet.css'
 import './index.css'
 
@@ -26,29 +24,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/login" element={<Navigate to="/officer/login" replace />} />
           <Route path="/officer/login" element={<OfficerLogin />} />
           <Route path="/officer/signup" element={<OfficerSignup />} />
-          <Route path="/citizen/login" element={<CitizenLogin />} />
-          <Route path="/citizen/signup" element={<CitizenSignup />} />
-          <Route
-            path="/citizen/dashboard"
-            element={
-              <CitizenRoute>
-                <CitizenDashboard />
-              </CitizenRoute>
-            }
-          />
-          <Route
-            path="/citizen/tickets/:ticketId"
-            element={
-              <CitizenRoute>
-                <CitizenDashboard />
-              </CitizenRoute>
-            }
-          />
+          <Route path="/report" element={<CitizenDashboard />} />
+          <Route path="/report/:ticketId" element={<CitizenDashboard />} />
+          <Route path="/citizen/*" element={<Navigate to="/report" replace />} />
           <Route
             path="/officer/dashboard"
             element={
               <PrivateRoute>
                 <DispatcherDashboard />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/staff"
+            element={
+              <PrivateRoute>
+                <StaffDashboard />
               </PrivateRoute>
             }
           />
