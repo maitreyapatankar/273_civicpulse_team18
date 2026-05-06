@@ -16,12 +16,14 @@ dispatchers.
 | S2 | AI Core | Pure queue consumer — classify, dedup, score, work order gen | Eng 2 | **none** |
 | S3 | Worker | Async job orchestrator — forwards to AI Core, writes DB, retries | Eng 3 | **none** |
 | S4 | Frontend | React dispatcher dashboard + citizen status tracker | Eng 4 | 5173 (dev) |
-| S5 | Notifications | Redis pub-sub listener, fires Twilio SMS | Eng 4 (week 2) | **none** |
+| S5 | Notifications | Redis pub-sub listener, fires Twilio SMS + email | Eng 4 | **none** |
+| S6 | Scheduler | Recurring crew assignment daemon (every 15 sec demo, 15 min prod) | Eng 3 | **none** |
 
 **Shared infrastructure:** Postgres 15, Redis 7, AWS S3 / Cloudflare R2.
 
 > **Key design rule:** S1 never calls S2 directly. S2 never exposes HTTP.
 > All S1 → S2 → S3 communication is exclusively through Redis queues.
+> S3 owns all DB writes. S6 runs independently on a schedule.
 
 ---
 
@@ -36,7 +38,9 @@ civicpulse/
 │   │   │   ├── reports.py      # POST /reports, PATCH /reports/:id
 │   │   │   ├── tickets.py      # GET /tickets, GET /tickets/:id/status, GET /citizens/tickets
 │   │   │   ├── auth.py         # /auth/* (citizen + officer + admin)
-│   │   │   └── admin.py        # PATCH /tickets/:id (override + comments)
+│   │   │   ├── admin.py        # PATCH /tickets/:id (override + crew assign + email notify)
+│   │   │   ├── crews.py        # GET /crews, POST /crews, crew management
+│   │   │   └── schedule.py     # GET /schedule, view assigned tickets (crew/officer)
 │   │   ├── models/             # SQLAlchemy ORM models
 │   │   └── schemas/            # Pydantic request/response schemas
 │   ├── ai_core/                # Service 2 — pure Celery consumer, NO HTTP server
@@ -53,20 +57,27 @@ civicpulse/
 │   ├── worker/                 # Service 3 — Celery job orchestrator
 │   │   ├── celery_app.py
 │   │   └── tasks.py            # process_report, handle_ai_result, handle_ai_failure
-│   └── notifications/          # Service 5 — Redis subscriber + Twilio
+│   ├── scheduler/              # Service 6 — Recurring crew assignment daemon
+│   │   └── scheduler.py        # Poll approved tickets without crew, auto-assign + email notify
+│   └── notifications/          # Service 5 — Redis subscriber + Twilio + Email
 │       └── listener.py
 ├── frontend/                   # Service 4 — React + Vite + TypeScript
 │   └── src/
 │       ├── pages/
 │       │   ├── DispatcherDashboard.tsx
-│       │   └── CitizenTracker.tsx
+│       │   ├── CitizenTracker.tsx
+│       │   └── StaffDashboard.tsx    # Assigned tickets + resolved tab + crew suggestion
 │       ├── components/
 │       └── api/                # typed API client (axios + TanStack Query)
 ├── shared/                     # shared Python DB connection + models
 │   ├── db.py
 │   └── models.py
-├── alembic/                    # DB migrations
-├── docker-compose.yml          # all 5 services + postgres + redis
+├── alembic/                    # DB migrations (0001–0009)
+│   └── versions/
+│       ├── ...
+│       ├── 0008_add_schedules.py
+│       └── 0009_add_crews.py
+├── docker-compose.yml          # all 6 services + postgres + redis
 └── .env.example
 ```
 
@@ -97,15 +108,16 @@ civicpulse/
 
 All inter-service communication flows through these named queues.
 
-| Queue | Producer | Consumer | Payload | Purpose |
+| Queue / Channel | Producer | Consumer | Payload | Purpose |
 |-------|----------|----------|---------|---------|
 | `reports:process` | S1 API Gateway | S3 Worker | `{report_id}` | New report submitted |
 | `ai_core:process` | S3 Worker | S2 AI Core | `{report_id, payload, attempt}` | Forward to AI pipeline |
 | `ai_core:results` | S2 AI Core | S3 Worker | `{report_id, enriched_ticket}` | Successful pipeline result |
 | `ai_core:failed` | S2 AI Core | S3 Worker | `{report_id, error, attempt}` | Pipeline failure with context |
 | `reports:dlq` | S3 Worker | manual / alert | `{report_id, error}` | Exhausted all retries |
-| `notify:ticket_ready` | S3 Worker | S5 Notifications | `{ticket_id}` | pub-sub: SMS citizen on create |
-| `notify:ticket_resolved` | S3 Worker | S5 Notifications | `{ticket_id}` | pub-sub: SMS citizen on resolve |
+| `notify:ticket_ready` | S3 Worker | S5 Notifications (pub-sub) | `{ticket_id, report_id}` | SMS citizen on ticket create |
+| `notify:ticket_updated` | S1 API (admin override) | S4 Frontend (SSE) | `{ticket_id, report_id}` | Real-time dashboard refresh on override |
+| `notify:ticket_resolved` | S3 Worker OR S1 API | S5 Notifications (pub-sub) | `{ticket_id, report_id}` | SMS citizen on ticket resolve |
 
 ---
 
@@ -126,7 +138,7 @@ All inter-service communication flows through these named queues.
 3. S3 Worker — consumes reports:process
    - Fetch raw_report from Postgres
    - UPDATE raw_reports SET status = "processing"
-  - LPUSH ai_core:process {report_id, payload, attempt: 0}
+   - LPUSH ai_core:process {report_id, payload, attempt: 0}
         │
         ▼
 4. S2 AI Core — consumes ai_core:process
@@ -141,24 +153,55 @@ All inter-service communication flows through these named queues.
         │
         ▼
 5. S3 Worker — consumes ai_core:results
-  - INSERT tickets (new) OR UPDATE ticket (edit)
-  - Auto-assign to officer: category_code → department → fewest open tickets
-  - UPDATE raw_reports SET status = "done"
-  - PUBLISH notify:ticket_ready {ticket_id} (new only)
-
-   OR consumes ai_core:failed
-   - attempt < 3 → re-LPUSH ai_core:process with exponential backoff
-   - attempt >= 3 → UPDATE status = "failed", LPUSH reports:dlq
+   - INSERT tickets (new) with approved=false, crew_id=null
+   - UPDATE raw_reports SET status = "done"
+   - PUBLISH notify:ticket_ready {ticket_id} → S5 Notifications
+        │
+        ▼ (async → dispatcher dashboard)
+6. Officer dispatch workflow
+   ┌─────────────────────────────────────────────────┐
+   │ Officer sees "open" tab: unapproved tickets      │
+   │ Clicks ticket → sees detail card + AI reasoning  │
+   │ Clicks "Approve" → suggests crew via load balance│
+   │ Selects crew from suggestion modal               │
+   └─────────────────────────────────────────────────┘
         │
         ▼
-6. S5 Notifications — pub-sub subscriber
-   - Receives notify:ticket_ready
-   - GET /tickets/:id/status from S1 to fetch reporter_phone
-   - Twilio SMS → citizen
+7. S1 API — consumes PATCH /tickets/:id
+   - UPDATE tickets SET approved=true, crew_id=<selected>, assigned_to=<crew.team_name>, assigned_at=now
+   - PUBLISH notify:ticket_updated {ticket_id} → S4 Frontend (SSE)
+   - If crew assigned: SEND email to crew.lead_email with issue type, priority, location
+        │
+        ▼
+8. S6 Scheduler — runs every 15 sec (demo) or 900 sec (prod)
+   - Query approved tickets without crew: WHERE approved=true AND crew_id IS NULL
+   - For each ticket:
+     * Load-balance: pick crew with fewest open tickets by department
+     * UPDATE tickets SET crew_id=<crew.id>, assigned_to=<crew.team_name>
+     * UPDATE tickets SET lifecycle_status='forwarded_to_maintenance'
+     * SEND email to crew.lead_email with same template as manual assign
+        │
+        ▼
+9. Officer marks resolved
+   - Click "Mark Resolved" on ticket detail → PATCH /tickets/:id {resolve: true}
+   - UPDATE tickets SET resolved_at=now
+   - PUBLISH notify:ticket_resolved {ticket_id} → S5 Notifications
+        │
+        ▼
+10. S5 Notifications — pub-sub subscriber
+    - Receives notify:ticket_ready | notify:ticket_resolved
+    - GET /tickets/:id/status from S1 to fetch reporter_phone
+    - Twilio SMS → citizen (customized by channel)
 
-7. S4 Frontend — polls S1 API
-  - Officer:  GET /tickets every 30s; GET /tickets/:id for detail
-  - Citizen:  GET /citizens/tickets + /citizens/tickets/:id
+11. S4 Frontend — real-time + polling
+    - SSE listener: receives notify:ticket_updated → forces refetch /tickets
+    - Officer: GET /tickets every 30s; GET /tickets/:id for detail
+    - Citizen: GET /citizens/tickets + /citizens/tickets/:id
+    - StaffDashboard: filters by assigned crew/officer + shows 4 tabs:
+      * "Open" — unapproved tickets
+      * "Needs Review" — confidence < 0.70
+      * "Pending" — approved AND crew assigned (forwarded_to_maintenance)
+      * "Resolved" — resolved_at != null
 ```
 
 ---
@@ -204,10 +247,22 @@ CREATE TABLE tickets (
   dispatcher_override       BOOLEAN DEFAULT FALSE,
   override_by               TEXT,
   override_at               TIMESTAMPTZ,
-  assigned_to               TEXT,             -- officer name; set by auto-assign or dispatcher
+  approved                  BOOLEAN DEFAULT FALSE,  -- dispatcher approved this ticket for crew assignment
+  crew_id                   UUID REFERENCES crews(id),  -- assigned crew (not officer)
+  assigned_to               TEXT,             -- crew team_name; set by crew assignment
   assigned_at               TIMESTAMPTZ,
   resolved_at               TIMESTAMPTZ,
   created_at                TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Work crews for field maintenance (replaces officer-based assignment)
+CREATE TABLE crews (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_name      TEXT NOT NULL UNIQUE,   -- "Roads Crew 1", "Drainage Team A"
+  crew_type      TEXT NOT NULL,          -- roads | traffic | drainage | structures | operations
+  lead_name      TEXT NOT NULL,
+  lead_email     TEXT NOT NULL,
+  created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE citizens (
@@ -567,21 +622,39 @@ REDIS_URL=redis://...
 **DispatcherDashboard** (`/officer/dashboard`)
 - Priority queue sorted by `urgency_score DESC`
 - Per-ticket detail panel: customer submission (text + photo), AI urgency reasoning, urgency factor bars, map pin
-- `confidence < 0.70` tickets in a separate "needs review" tab
-- Actions: override priority / assign crew / add department update / mark resolved
-- SSE realtime updates via Redis pub-sub
+- Tabs:
+  * "Open" — unapproved tickets (approved=false)
+  * "Needs Review" — confidence < 0.70 or image_text_conflict
+  * "Pending" — approved AND crew assigned (forwarded_to_maintenance state)
+  * "Resolved" — resolved_at IS NOT NULL
+- Actions: approve / suggest crew / override priority / mark resolved
+- Crew suggestion modal: load-balances and proposes crew by department (same algorithm as Scheduler)
+- SSE realtime updates via Redis pub-sub (`notify:ticket_updated` channel)
 
-**StaffDashboard** (`/staff`)
-- Shows only tickets assigned to the logged-in officer
-- "More details" on every ticket: customer text + photo, conflict callout, confidence bar, AI reasoning
-- Grouped by cluster (master + duplicates)
+**StaffDashboard** (`/staff`) — for assigned crew members
+- Shows only tickets assigned to the logged-in crew
+- Filters by crew_type and assigned crew (load from `/schedule` endpoint)
+- Tabs:
+  * "Open" — unapproved tickets (approved=false)
+  * "Needs Review" — confidence < 0.70
+  * "Pending" — approved AND crew assigned (forwarded_to_maintenance)
+  * "Resolved" — resolved_at IS NOT NULL
+- Per-ticket detail card: vertical layout with sections:
+  1. AI Reasoning + factors (top)
+  2. Officer Approval button (blue, prominent) → triggers crew suggestion modal
+  3. Crew Assignment (shows selected crew after approval)
+  4. Customer Report (text + photo)
+  5. Work Order (materials, estimated hours)
+  6. Activity Log (comments)
+  7. Metadata footer (category, severity, confidence)
+- Resolution button (Mark Resolved) only visible for pending tickets
 
 **CitizenDashboard** (`/report`)
 - Anonymous report form: title, description, address search, map click to pin location (geolocation on load), optional photo
 - Post-submission: confirmation with ticket ID and live status polling
 
 **CitizenTracker** (`/track/:ticketId`)
-- Public status page: queued → processing → open → in_progress → resolved
+- Public status page: derived lifecycle status (queued → processing → open → approved → forwarded_to_maintenance → resolved)
 - Department updates visible to citizen
 
 ### Data fetching
@@ -652,6 +725,25 @@ for message in pubsub.listen():
     )
 ```
 
+### Email notifications (crew lead assignment alerts)
+
+When a crew is assigned to a ticket (manually via dispatcher or auto by scheduler), the crew lead receives an email:
+
+```
+Subject: CivicPulse: New ticket assigned to {team_name}
+
+Hi {lead_name},
+
+A ticket has been assigned to your crew ({team_name}).
+
+  Issue   : {subcategory_name or issue_type}
+  Priority: P{urgency_score}/5
+  Location: {address}
+
+Log in to CivicPulse to view the full schedule:
+http://localhost:5173/officer/schedule
+```
+
 ### Environment variables
 
 ```env
@@ -660,6 +752,88 @@ API_BASE_URL=http://api:8000
 TWILIO_ACCOUNT_SID=...
 TWILIO_AUTH_TOKEN=...
 TWILIO_FROM_NUMBER=+1...
+EMAIL_ADDRESS=noreply@civicpulse.gov
+EMAIL_APP_PASSWORD=<Gmail App Password>
+```
+
+---
+
+## Service 6 — Scheduler
+
+**Entry point:** `services/scheduler/scheduler.py`
+**Framework:** Pure Python polling loop with SQLAlchemy
+**Responsibilities:** Recurring crew assignment for approved tickets. Runs on a schedule (15 sec demo, 900 sec = 15 min production).
+Reads Postgres (approved tickets without crew), assigns to best crew by load balance, sends email to crew lead.
+
+### Main loop
+
+```python
+# services/scheduler/scheduler.py
+
+import os
+import time
+from datetime import datetime, timezone
+from shared.db import get_db
+from shared.models import Ticket, Crew
+from services.api.routers.admin import _email_crew_lead, _suggest_crew
+
+SCHEDULER_INTERVAL = int(os.environ.get("SCHEDULER_INTERVAL", 900))
+
+while True:
+    try:
+        with get_db() as db:
+            # Find approved tickets without crew assignment
+            pending = db.query(Ticket)\
+                .filter(Ticket.approved == True)\
+                .filter(Ticket.crew_id.is_(None))\
+                .all()
+
+            for ticket in pending:
+                # Suggest best crew by department + load balance
+                suggested = _suggest_crew(db, ticket)
+                if not suggested:
+                    continue
+
+                # Assign crew
+                ticket.crew_id = suggested.id
+                ticket.assigned_to = suggested.team_name
+                ticket.assigned_at = datetime.now(timezone.utc)
+                db.commit()
+
+                # Send email to crew lead in background
+                raw = db.get(RawReport, ticket.raw_report_id)
+                address = raw.address if raw else None
+
+                try:
+                    _email_crew_lead(suggested, ticket, address)
+                except Exception as exc:
+                    log.warning("Failed to notify crew lead: %s", exc)
+
+    except Exception as exc:
+        log.error("Scheduler error: %s", exc)
+
+    time.sleep(SCHEDULER_INTERVAL)
+```
+
+### Load-balancing algorithm
+
+Same as Worker and Admin API (line 78-97 in `services/api/routers/admin.py`):
+
+1. Map ticket `category_code` prefix to department (RD → roads, TF → traffic, etc.)
+2. Query all crews of that department type
+3. For each crew, count open unresolved tickets: `WHERE assigned_to=crew.team_name AND resolved_at IS NULL`
+4. Pick crew with **fewest open tickets**
+
+Ensures tickets are distributed evenly across crews in a department.
+
+### Environment variables
+
+```env
+SCHEDULER_INTERVAL=15       # seconds (demo); 900 for 15-min production schedule
+LOG_LEVEL=INFO              # DEBUG | INFO | WARNING | ERROR
+DATABASE_URL=postgresql://...
+EMAIL_ADDRESS=noreply@civicpulse.gov
+EMAIL_APP_PASSWORD=<Gmail App Password>
 ```
 
 ---
@@ -711,6 +885,15 @@ services:
     env_file: .env
     # No ports — pure pub-sub listener
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+    command: python -u scheduler.py
+    depends_on: [postgres, redis]
+    env_file: .env
+    # No ports — pure daemon, no HTTP server
+
   frontend:
     build: ./frontend
     ports: ["5173:5173"]
@@ -732,19 +915,28 @@ External clients (browser, mobile app, 311 CSV)
   ▼
 S1 API Gateway
   │
-  │  LPUSH reports:process
-  ▼
-S3 Worker  ──────────────────────────────────────────────┐
-  │                                                      │
-  │  LPUSH ai_core:process                    consumes ai_core:results
-  ▼                                           consumes ai_core:failed
-S2 AI Core (no HTTP, no DB writes — reads Postgres for dedup only)
-  │
-  ├── on success → LPUSH ai_core:results ──► S3 Worker
-  │                                              │
-  └── on failure → LPUSH ai_core:failed ──► S3 Worker
-                                               │
-                              ┌────────────────┴───────────────────┐
+  ├─ POST /reports → LPUSH reports:process ──────────────────────┐
+  │                                                               │
+  └─ PATCH /tickets/:id → PUBLISH notify:ticket_updated ─┐      │
+                                                          │      │
+                                                          ▼      ▼
+                                                       S3 Worker
+                                                          │
+                                                          │  LPUSH ai_core:process
+                                                          ▼
+                                                       S2 AI Core
+                                                       (read-only DB for dedup)
+                                                          │
+                                                ┌─────────┴──────────┐
+                                                │                    │
+                              on success        │      on failure    │
+                              LPUSH ai_core:    │      LPUSH ai_core:│
+                              results           │      failed        │
+                                                │                    │
+                                                ▼                    ▼
+                                           S3 Worker consumes both channels
+                                                │
+                              ┌─────────────────┴──────────────────┐
                               │                                    │
                          success path                         failure path
                          INSERT tickets                       attempt < 3?
@@ -753,11 +945,86 @@ S2 AI Core (no HTTP, no DB writes — reads Postgres for dedup only)
                               │                               → DLQ + status=failed
                               ▼
                          S5 Notifications (pub-sub)
+                         ├─ notify:ticket_ready
+                         ├─ notify:ticket_updated (from S1 override)
+                         └─ notify:ticket_resolved
                               │
                          Twilio SMS → Citizen
+                              
 
-S4 Frontend ──REST HTTP──► S1 API Gateway (all reads, all writes via S1 only)
+S6 Scheduler (every 15s/900s)
+  │
+  └─ Query approved tickets without crew
+     UPDATE crew_id + email crew lead
+     (runs independently on schedule)
+       │
+       └─ SEND email to crew leads
+
+
+S4 Frontend
+  ├─ SSE listener → notify:ticket_updated → forces refetch
+  ├─ REST polling → GET /tickets every 30s
+  └─ REST API → S1 only (all reads & writes)
 ```
+
+---
+
+## Ticket Lifecycle Status — Computed, Not Stored
+
+**Key principle:** Ticket status is **derived on-read**, not stored in the database. This eliminates state machine bugs and keeps the source of truth in three Boolean fields.
+
+### Status computation
+
+```python
+def derive_status(raw_status: str, ticket: Ticket) -> str:
+    """Citizen-facing lifecycle status from raw_report + ticket fields.
+    
+    Order of checks matters: failed beats everything; resolved beats in_progress;
+    forwarded_to_maintenance requires BOTH approved=true AND crew assigned;
+    pre-AI states (queued/processing) win when no ticket has been created yet.
+    """
+    if raw_status == "failed":
+        return "failed"
+    if raw_status in ("queued", "processing") and not ticket:
+        return raw_status or "queued"
+    if ticket and ticket.resolved_at:
+        return "resolved"
+    # Only forwarded_to_maintenance if BOTH approved AND crew_id set
+    if ticket and ticket.approved and ticket.crew_id:
+        return "forwarded_to_maintenance"
+    if ticket and ticket.approved:
+        return "approved"
+    if ticket:
+        return "open"
+    return raw_status or "queued"
+```
+
+### State transition matrix
+
+| From | To | Trigger | Who | Precondition |
+|------|-----|---------|-----|--------------|
+| queued | processing | AI pipeline starts | Worker | raw_reports.status = "processing" |
+| processing | open | Ticket created | Worker (S3) | INSERT tickets; S2 success |
+| open | needs_review | CI<0.70 or conflict | S2 AI Core | confidence < 0.70 or image_text_conflict |
+| open/needs_review | approved | Officer approves | S1 API (PATCH) | Dispatcher clicks "Approve" |
+| approved | forwarded_to_maintenance | Crew assigned | Scheduler OR S1 API | crew_id set AND approved=true |
+| forwarded_to_maintenance | resolved | Officer marks done | S1 API (PATCH) | Dispatcher clicks "Mark Resolved" |
+| any | failed | Exhausted retries | Worker | attempt >= 3 in ai_core:failed |
+
+### Backend filtering
+
+**GET /tickets** (S1 API) supports these status filters:
+
+- `status=open`: `resolved_at IS NULL AND crew_id IS NULL` → dispatcher sees unassigned open queue
+- `status=all`: all tickets (both resolved and unresolved) → frontend does client-side tab filtering
+- `status=resolved`: `resolved_at IS NOT NULL` → resolved tickets tab
+
+**Frontend filtering** (StaffDashboard) from `/tickets?status=all`:
+
+- "Open" tab: `!t.resolved_at && !t.approved` → unapproved tickets
+- "Needs Review" tab: `!t.resolved_at && t.needs_review` → confidence < 0.70
+- "Pending" tab: `!t.resolved_at && t.approved && t.crew_id` → forwarded_to_maintenance
+- "Resolved" tab: `t.resolved_at` → resolved tickets
 
 ---
 
@@ -775,7 +1042,13 @@ S4 Frontend ──REST HTTP──► S1 API Gateway (all reads, all writes via S
 | Dedup via subcategory + 100 m geo bbox | Direct Postgres JOIN | Subcategory from classify node + required lat/lng fields make a reliable signal without any ML; fail-open on query error |
 | Urgency scored for duplicates too | Unconditional edge dedup → urgency | Master ticket urgency is updated as the cluster grows; dispatcher sees live priority |
 | gemini-2.5-flash-lite for all LLM steps | Single lightweight model | Handles vision + classification + urgency — one key, one client, lower cost per call |
-| Auto-assignment by department + load balance | Worker maps category_code prefix to department, picks officer with fewest open tickets | Ensures skill-matched routing; load-balances within department; preserves manual overrides |
+| Ticket status lifecycle not stored | Derived from resolved_at, approved, crew_id | Eliminates state machine bugs; truth is in 3 boolean fields; status computed on-read |
+| Crew-based assignment, not officer-based | Crews table with team_name, lead_email | Separates dispatch (officer) from execution (crew); enables email to crew lead on assignment |
+| Approval separate from crew assignment | tickets.approved Boolean field | Officer approves ticket first, then scheduler/dispatcher assigns crew; two independent decisions |
+| Recurring crew assignment via S6 Scheduler | Separate daemon polling every 15s (demo) | Better than event-driven for this pattern; avoids race conditions; decouples from dispatcher UI |
+| Load-balancing algorithm in 3 places | Worker + Admin API + Scheduler all use same logic | Consistency across auto-assign, manual override suggest, and scheduler; always routes by department + fewest open |
+| Email to crew on assignment | SMTP via Gmail App Password | Notifies crew lead immediately when dispatcher or scheduler assigns work; crew lead knows before checking system |
+| notify:ticket_updated pub-sub channel | S1 publishes on override, S4 frontend SSE listens | Enables real-time dashboard refresh without polling /tickets; officer sees updates from other dispatchers instantly |
 | Monorepo | Single repo, multiple service folders | Shared models + one docker-compose + simpler CI for a 4-person team |
 
 ---
