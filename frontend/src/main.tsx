@@ -68,50 +68,19 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
                 </PrivateRoute>
               }
             />
+            <Route
+              path="/officer/schedule"
+              element={
+                <PrivateRoute>
+                  <SchedulePage />
+                </PrivateRoute>
+              }
+            />
             <Route path="/track/:ticketId" element={<CitizenTracker />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
       </QueryClientProvider>
     </ErrorBoundary>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/login" element={<Navigate to="/officer/login" replace />} />
-          <Route path="/officer/login" element={<OfficerLogin />} />
-          <Route path="/officer/signup" element={<OfficerSignup />} />
-          <Route path="/report" element={<CitizenDashboard />} />
-          <Route path="/report/:ticketId" element={<CitizenDashboard />} />
-          <Route path="/citizen/*" element={<Navigate to="/report" replace />} />
-          <Route
-            path="/officer/dashboard"
-            element={
-              <PrivateRoute>
-                <DispatcherDashboard />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/staff"
-            element={
-              <PrivateRoute>
-                <StaffDashboard />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/officer/schedule"
-            element={
-              <PrivateRoute>
-                <SchedulePage />
-              </PrivateRoute>
-            }
-          />
-          <Route path="/track/:ticketId" element={<CitizenTracker />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
-    </QueryClientProvider>
   </React.StrictMode>,
 )
