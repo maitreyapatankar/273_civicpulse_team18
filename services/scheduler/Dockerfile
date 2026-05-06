@@ -9,3 +9,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY services/scheduler/ ./
 
 ENV PYTHONPATH=/app
+
+CMD ["celery", "-A", "scheduler", "worker", "--beat", "--concurrency=1"]
