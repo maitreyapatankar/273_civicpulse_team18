@@ -20,7 +20,7 @@ export default function OfficerLogin() {
         email,
         password,
       })
-      localStorage.setItem('jwt_token', data.access_token)
+      localStorage.setItem('access_token', data.access_token)
       if (data.name) localStorage.setItem('officer_name', data.name)
       if (data.email) localStorage.setItem('officer_email', data.email)
       if (data.role) localStorage.setItem('officer_role', data.role)
