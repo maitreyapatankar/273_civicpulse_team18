@@ -30,7 +30,7 @@ function shouldUseCitizenToken(url?: string): boolean {
 }
 
 const OFFICER_STORAGE_KEYS = [
-  'jwt_token',
+  'access_token',
   'officer_name',
   'officer_email',
   'officer_role',
@@ -116,7 +116,7 @@ api.interceptors.request.use((config) => {
   if (shouldSkipAuth(config.url)) return config
 
   const citizenToken = localStorage.getItem('citizen_token')
-  const officerToken = localStorage.getItem('jwt_token')
+  const officerToken = localStorage.getItem('access_token')
 
   if (shouldUseCitizenToken(config.url)) {
     if (citizenToken) config.headers.Authorization = `Bearer ${citizenToken}`
