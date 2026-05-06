@@ -16,7 +16,7 @@ import os
 import logging
 from datetime import datetime, timezone
 
-import psycopg
+from psycopg_pool import ConnectionPool
 
 from ..state import PipelineState
 
@@ -30,6 +30,10 @@ _TOLERANCE = 0.0009
 _MIN_HOURS = 0.5
 
 _DATABASE_URL = os.environ["DATABASE_URL"]
+
+# B6: module-level pool — reused across all dedup calls from the same worker
+# process instead of opening a new connection per invocation.
+_pool = ConnectionPool(_DATABASE_URL, min_size=1, max_size=2, open=True)
 
 _DEDUP_SQL = """
     SELECT t.id, t.cluster_count, t.created_at
@@ -66,7 +70,7 @@ def dedup_node(state: PipelineState) -> PipelineState:
         return base
 
     try:
-        with psycopg.connect(_DATABASE_URL) as conn:
+        with _pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     _DEDUP_SQL,

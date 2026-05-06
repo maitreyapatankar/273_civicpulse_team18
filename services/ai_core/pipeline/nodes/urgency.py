@@ -227,12 +227,15 @@ def urgency_node(state: PipelineState) -> PipelineState:
                     response_mime_type="application/json"
                 ),
             )
-            response = model.generate_content([_SYSTEM, _build_user_msg(state)])
+            response = model.generate_content(
+                [_SYSTEM, _build_user_msg(state)],
+                request_options={"timeout": 30},
+            )
             raw = json.loads(response.text)
             scored = {
-                "score":       int(raw["score"]),
-                "factors":     raw["factors"],
-                "reasoning":   raw["reasoning"],
+                "score":       max(1, min(5, int(raw["score"]))),  # B5: clamp to valid 1-5 range
+                "factors":     raw.get("factors") or {},
+                "reasoning":   raw.get("reasoning") or "",
                 "p1_override": False,
             }
             log.info(

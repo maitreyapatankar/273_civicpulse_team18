@@ -36,6 +36,11 @@ VALID_CODES: dict[str, str] = {
     for sub in cat["subcategories"]
 }
 
+VALID_CATEGORY_CODES: dict[str, str] = {
+    cat["code"]: cat["name"]
+    for cat in _taxonomy["categories"]
+}
+
 TAXONOMY_PROMPT_STRING = "\n".join(
     f"{cat['code']} - {cat['name']}:\n"
     + "\n".join(f"  {sub['code']} {sub['name']}" for sub in cat["subcategories"])
@@ -140,10 +145,10 @@ def classify_node(state: PipelineState) -> PipelineState:
                 response_mime_type="application/json"
             ),
         )
-        response = model.generate_content([
-            CLASSIFIER_SYSTEM_PROMPT,
-            user_msg,
-        ])
+        response = model.generate_content(
+            [CLASSIFIER_SYSTEM_PROMPT, user_msg],
+            request_options={"timeout": 30},
+        )
 
         try:
             raw = json.loads(response.text)
@@ -165,35 +170,59 @@ def classify_node(state: PipelineState) -> PipelineState:
                 "completed_nodes":           state["completed_nodes"] + ["classify"],
             }
 
-        validated_code, fallback_used = _validate_code(raw["subcategory_code"])
+        # B3: use .get() for every key — missing fields fall back gracefully
+        raw_subcode   = raw.get("subcategory_code") or ""
+        raw_catcode   = raw.get("category_code") or ""
+        raw_conf      = raw.get("confidence", 0.0)
+        raw_severity  = raw.get("severity")
+        raw_conflict  = raw.get("image_text_conflict", False)
+
+        validated_code, fallback_used = _validate_code(raw_subcode)
+
+        # B4: validate category_code against taxonomy; fall back to the prefix
+        # derived from the validated subcategory code so auto-assign still works.
+        raw_catcode_upper = raw_catcode.strip().upper()
+        if raw_catcode_upper in VALID_CATEGORY_CODES:
+            category_code = raw_catcode_upper
+            category_name = VALID_CATEGORY_CODES[category_code]
+        else:
+            # Derive category from validated subcategory prefix (e.g. "RD-001" → "RD")
+            derived = validated_code.split("-")[0]
+            category_code = derived if derived in VALID_CATEGORY_CODES else "OT"
+            category_name = VALID_CATEGORY_CODES.get(category_code, "Other")
+            log.warning(
+                "classify_invalid_category report_id=%s raw=%s derived=%s",
+                state.get("report_id"), raw_catcode, category_code,
+            )
 
         needs_review = (
-            float(raw["confidence"]) < 0.70
-            or bool(raw["image_text_conflict"])
+            float(raw_conf) < 0.70
+            or bool(raw_conflict)
             or fallback_used
         )
 
         log.info(
-            "classify_done report_id=%s subcategory=%s confidence=%.2f needs_review=%s image_text_conflict=%s",
+            "classify_done report_id=%s category=%s subcategory=%s confidence=%.2f needs_review=%s image_text_conflict=%s",
             state.get("report_id"),
+            category_code,
             validated_code,
-            float(raw["confidence"]),
+            float(raw_conf),
             needs_review,
-            bool(raw["image_text_conflict"]),
+            bool(raw_conflict),
         )
         return {
             **state,
-            "category_code":             raw["category_code"],
-            "category_name":             raw["category_name"],
+            "category_code":             category_code,
+            "category_name":             category_name,
             "subcategory_code":          validated_code,
             "subcategory_name":          VALID_CODES.get(
                                              validated_code,
-                                             raw["subcategory_name"],
+                                             raw.get("subcategory_name", ""),
                                          ),
-            "severity":                  int(raw["severity"]),
-            "confidence":                float(raw["confidence"]),
-            "reasoning":                 raw["reasoning"],
-            "image_text_conflict":       bool(raw["image_text_conflict"]),
+            "severity":                  int(raw_severity) if raw_severity is not None else None,
+            "confidence":                float(raw_conf),
+            "reasoning":                 raw.get("reasoning"),
+            "image_text_conflict":       bool(raw_conflict),
             "image_classification_hint": raw.get("image_classification_hint", ""),
             "needs_review":              needs_review,
             "completed_nodes":           state["completed_nodes"] + ["classify"],

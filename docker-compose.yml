@@ -9,23 +9,44 @@ services:
       POSTGRES_PASSWORD: civic
     ports: ["5432:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U civic -d civicpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   api:
     build:
       context: .
       dockerfile: services/api/Dockerfile
     ports: ["8000:8000"]
-    depends_on: [postgres, redis]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
 
   ai_core:
     build: ./services/ai_core
     command: celery -A consumer worker --concurrency=4 -Q ai_core:process
-    depends_on: [redis, postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
     # No ports — pure queue consumer, no HTTP server
 
@@ -36,13 +57,19 @@ services:
     command: >
       celery -A tasks worker --concurrency=4
       -Q reports:process,ai_core:results,ai_core:failed
-    depends_on: [redis, postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
     # No ports — pure queue consumer
 
   notifications:
     build: ./services/notifications
-    depends_on: [redis]
+    depends_on:
+      redis:
+        condition: service_healthy
     env_file: .env
     # No ports — pure pub-sub listener
 

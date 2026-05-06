@@ -66,10 +66,15 @@ logging.basicConfig(
 )
 
 celery_app = Celery("worker", broker=REDIS_URL, backend=None)
-celery_app.conf.task_serializer = "json"
-celery_app.conf.accept_content  = ["json"]
+celery_app.conf.task_serializer            = "json"
+celery_app.conf.accept_content             = ["json"]
+# Acknowledge only after the task completes so a worker crash re-queues it.
+celery_app.conf.task_acks_late             = True
+celery_app.conf.task_reject_on_worker_lost = True
 
-_redis = redis.Redis.from_url(REDIS_URL)
+# socket_timeout=2 ensures publish() fails fast on a hung Redis rather than
+# blocking the task indefinitely. _publish_event already swallows the exception.
+_redis = redis.Redis.from_url(REDIS_URL, socket_timeout=2, socket_connect_timeout=2)
 log = logging.getLogger(__name__)
 
 
@@ -80,15 +85,6 @@ def _auto_assign(db, ticket: Ticket, category_code: Optional[str]) -> None:
     officers table is empty.
     """
     dept = _CATEGORY_DEPT.get((category_code or "")[:2], "operations")
-
-    # Count open tickets already assigned per officer name.
-    open_counts: dict[str, int] = dict(
-        db.query(Ticket.assigned_to, func.count(Ticket.id))
-          .filter(Ticket.assigned_to.isnot(None))
-          .filter(Ticket.resolved_at.is_(None))
-          .group_by(Ticket.assigned_to)
-          .all()
-    )
 
     candidates = (
         db.query(Officer)
@@ -103,12 +99,25 @@ def _auto_assign(db, ticket: Ticket, category_code: Optional[str]) -> None:
         log.warning("auto_assign no officers found dept=%s ticket_id=%s", dept, ticket.id)
         return
 
-    chosen = min(candidates, key=lambda o: open_counts.get(o.name, 0))
+    # C3: count open tickets per officer keyed by ID, not name, so two officers
+    # with the same name don't share a counter.  One query per candidate avoids
+    # the name-collision problem without requiring a schema change.
+    open_counts: dict[str, int] = {
+        str(o.id): (
+            db.query(func.count(Ticket.id))
+              .filter(Ticket.assigned_to == o.name)
+              .filter(Ticket.resolved_at.is_(None))
+              .scalar() or 0
+        )
+        for o in candidates
+    }
+
+    chosen = min(candidates, key=lambda o: open_counts.get(str(o.id), 0))
     ticket.assigned_to = chosen.name
     ticket.assigned_at = datetime.now(timezone.utc)
     log.info(
         "auto_assign ticket_id=%s dept=%s officer=%s open_tickets=%s",
-        ticket.id, dept, chosen.name, open_counts.get(chosen.name, 0),
+        ticket.id, dept, chosen.name, open_counts.get(str(chosen.id), 0),
     )
 
 
@@ -129,18 +138,24 @@ def _fetch_raw_payload(report_id: str) -> dict:
     """Re-fetch the raw report from Postgres and return it as a pipeline payload dict."""
     with get_db() as db:
         report = db.get(RawReport, report_id)
+        if not report:
+            raise LookupError(f"RawReport {report_id} not found — cannot retry")
         return report.to_dict()
 
 
 # ── Task 1 ────────────────────────────────────────────────────────────────────
 # Queue: reports:process  |  Producer: S1 API Gateway
 
-@celery_app.task(bind=True, name="worker.tasks.process_report", queue="reports:process")
+@celery_app.task(bind=True, name="worker.tasks.process_report", queue="reports:process",
+                 soft_time_limit=30, time_limit=60)
 def process_report(self, report_id: str):
     """Fetch the raw report, mark it processing, forward payload to AI Core."""
     log.info("process_report_start report_id=%s", report_id)
     with get_db() as db:
         report = db.get(RawReport, report_id)
+        if not report:
+            log.error("process_report_not_found report_id=%s — discarding task", report_id)
+            return
         existing_ticket = (
             db.query(Ticket)
               .filter(Ticket.raw_report_id == report_id)
@@ -166,7 +181,8 @@ def process_report(self, report_id: str):
 # ── Task 2 ────────────────────────────────────────────────────────────────────
 # Queue: ai_core:results  |  Producer: S2 AI Core (success path)
 
-@celery_app.task(name="worker.tasks.handle_ai_result", queue="ai_core:results")
+@celery_app.task(name="worker.tasks.handle_ai_result", queue="ai_core:results",
+                 soft_time_limit=60, time_limit=120)
 def handle_ai_result(report_id: str, enriched: dict):
     """Write enriched ticket to DB, mark report done, publish SSE notification.
 
@@ -264,10 +280,21 @@ def handle_ai_result(report_id: str, enriched: dict):
 # ── Task 3 ────────────────────────────────────────────────────────────────────
 # Queue: ai_core:failed  |  Producer: S2 AI Core (failure path)
 
-@celery_app.task(name="worker.tasks.handle_ai_failure", queue="ai_core:failed")
+@celery_app.task(name="worker.tasks.handle_ai_failure", queue="ai_core:failed",
+                 soft_time_limit=30, time_limit=60)
 def handle_ai_failure(report_id: str, error: str, attempt: int):
     """Retry the pipeline with exponential backoff, or send to DLQ after 3 attempts."""
     if attempt < 3:
+        # Idempotency guard: with task_acks_late a worker crash after send_task but
+        # before ack re-delivers this task. The NX key prevents a second retry from
+        # being enqueued for the same (report, attempt) pair.
+        lock_key = f"retry_lock:{report_id}:{attempt}"
+        if not _redis.set(lock_key, "1", nx=True, ex=120):
+            log.warning(
+                "handle_ai_failure duplicate delivery skipped report_id=%s attempt=%s",
+                report_id, attempt,
+            )
+            return
         log.warning(
             "ai_failure_retry report_id=%s attempt=%s next_attempt=%s error=%s",
             report_id,
@@ -275,7 +302,19 @@ def handle_ai_failure(report_id: str, error: str, attempt: int):
             attempt + 1,
             error,
         )
-        payload = _fetch_raw_payload(report_id)
+        try:
+            payload = _fetch_raw_payload(report_id)
+        except LookupError as exc:
+            log.error(
+                "retry_fetch_failed report_id=%s error=%s — sending to DLQ",
+                report_id, exc,
+            )
+            celery_app.send_task(
+                "worker.tasks.dlq_alert",
+                args=[report_id, str(exc)],
+                queue="reports:dlq",
+            )
+            return
         payload["attempt"] = attempt + 1
 
         celery_app.send_task(
@@ -304,7 +343,8 @@ def handle_ai_failure(report_id: str, error: str, attempt: int):
 # ── Task 4 ────────────────────────────────────────────────────────────────────
 # Queue: reports:dlq  |  Producer: handle_ai_failure when retries exhausted
 
-@celery_app.task(name="worker.tasks.dlq_alert", queue="reports:dlq")
+@celery_app.task(name="worker.tasks.dlq_alert", queue="reports:dlq",
+                 soft_time_limit=10, time_limit=30)
 def dlq_alert(report_id: str, error: str):
     """Terminal failure handler. For now: log loudly; real alerting wires here later."""
     log.error("DLQ report_id=%s error=%s", report_id, error)

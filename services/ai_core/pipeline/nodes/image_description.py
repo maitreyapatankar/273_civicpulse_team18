@@ -100,13 +100,16 @@ def image_description_node(state: PipelineState) -> PipelineState:
 
     try:
         model = genai.GenerativeModel(MODEL)
-        response = model.generate_content([
-            IMAGE_DESCRIPTION_PROMPT,
-            {
-                "mime_type": _detect_mime_type(state["image_url"]),
-                "data": image_bytes,
-            },
-        ])
+        response = model.generate_content(
+            [
+                IMAGE_DESCRIPTION_PROMPT,
+                {
+                    "mime_type": _detect_mime_type(state["image_url"]),
+                    "data": image_bytes,
+                },
+            ],
+            request_options={"timeout": 60},
+        )
         log.info(
             "image_description_done report_id=%s desc_len=%s",
             state.get("report_id"),

@@ -3,9 +3,7 @@ import io
 import logging
 import os
 import uuid
-from functools import lru_cache
 from typing import Optional
-from uuid import UUID
 
 import boto3
 from botocore.config import Config
@@ -20,29 +18,51 @@ from schemas.report import ReportSubmitted
 router = APIRouter(prefix="/reports", tags=["reports"])
 log = logging.getLogger(__name__)
 
+# 5 s connect / 30 s read — prevents S3/R2 hangs from blocking the API (#1, #2).
+# s3v4 is required by Cloudflare R2 and recommended for AWS.
+_BOTO_CFG = Config(
+    signature_version="s3v4",
+    connect_timeout=5,
+    read_timeout=30,
+)
 
-@lru_cache(maxsize=1)
+_s3_client = None
+_celery_client = None
+
+
 def _s3():
-    if os.environ.get("R2_ENDPOINT"):
-        return boto3.client(
-            "s3",
-            endpoint_url=os.environ["R2_ENDPOINT"],
-            region_name=os.environ.get("R2_REGION", "auto"),
-            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-            config=Config(signature_version="s3v4"),
-        )
-    return boto3.client(
-        "s3",
-        region_name=os.environ["S3_REGION"],
-        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-    )
+    global _s3_client
+    if _s3_client is None:
+        if os.environ.get("R2_ENDPOINT"):
+            _s3_client = boto3.client(
+                "s3",
+                endpoint_url=os.environ["R2_ENDPOINT"],
+                region_name=os.environ.get("R2_REGION", "auto"),
+                aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+                config=_BOTO_CFG,
+            )
+        else:
+            _s3_client = boto3.client(
+                "s3",
+                region_name=os.environ["S3_REGION"],
+                aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+                aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+                config=_BOTO_CFG,
+            )
+    return _s3_client
 
 
-@lru_cache(maxsize=1)
 def _celery():
-    return Celery(broker=os.environ["REDIS_URL"])
+    global _celery_client
+    if _celery_client is None:
+        _celery_client = Celery(broker=os.environ["REDIS_URL"])
+        # 5 s socket-level timeout so a slow/dead Redis doesn't hang send_task (#1).
+        _celery_client.conf.broker_transport_options = {
+            "socket_timeout": 5,
+            "socket_connect_timeout": 5,
+        }
+    return _celery_client
 
 
 def _bucket_name() -> str:
@@ -144,7 +164,15 @@ async def create_report(
         db.add(report)
         db.commit()
 
-    _enqueue(report_id)
+    try:
+        _enqueue(report_id)
+    except Exception as exc:
+        log.error("enqueue_failed report_id=%s error=%s", report_id, exc)
+        with get_db() as db:
+            db.query(RawReport).filter_by(id=report_id).update({"status": "failed"})
+            db.commit()
+        raise HTTPException(status_code=503, detail="Queue unavailable, please retry.")
+
     log.info("report_create_done report_id=%s status=processing", report_id)
     return ReportSubmitted(ticket_id=report_id, status="processing")
 

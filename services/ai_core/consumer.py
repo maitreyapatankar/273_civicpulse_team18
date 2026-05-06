@@ -16,11 +16,13 @@ max_retries=0 — S3 Worker owns all retry and backoff decisions.
 
 import logging
 import os
+import time
 
 from celery import Celery
-from psycopg import Connection
+from celery.exceptions import SoftTimeLimitExceeded
 from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg_pool import ConnectionPool
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -40,16 +42,57 @@ celery_app = Celery(
     broker=REDIS_URL,
     backend=None,
 )
-celery_app.conf.task_serializer    = "json"
-celery_app.conf.accept_content     = ["json"]
-celery_app.conf.task_track_started = True
+celery_app.conf.task_serializer            = "json"
+celery_app.conf.accept_content             = ["json"]
+celery_app.conf.task_track_started         = True
+# Acknowledge only after the task completes so a worker crash re-queues it.
+celery_app.conf.task_acks_late             = True
+celery_app.conf.task_reject_on_worker_lost = True
 
 # ── Checkpointer + graph — built once at worker startup ───────────────────────
+# Uses ConnectionPool (B1: auto-reconnects on dropped connections).
+# Retries until Postgres is ready (B2: handles slow DB startup in Docker).
 
-_pg_conn      = Connection.connect(DATABASE_URL, autocommit=True)
-_checkpointer = PostgresSaver(_pg_conn)
-_checkpointer.setup()
-_graph        = build_graph(_checkpointer)
+def _build_graph(url: str, max_attempts: int = 10, delay: float = 3.0):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            pool = ConnectionPool(url, min_size=1, max_size=4, open=True)
+            checkpointer = PostgresSaver(pool)
+            checkpointer.setup()
+            graph = build_graph(checkpointer)
+            log.info("db_connected attempt=%s", attempt)
+            return graph
+        except Exception as exc:
+            if attempt < max_attempts:
+                log.warning(
+                    "db_not_ready attempt=%s/%s error=%s retrying_in=%.0fs",
+                    attempt, max_attempts, exc, delay,
+                )
+                time.sleep(delay)
+            else:
+                log.error("db_connection_failed after %s attempts: %s", max_attempts, exc)
+                raise
+
+
+_graph = _build_graph(DATABASE_URL)
+
+
+def _send_failure(report_id: str, error_msg: str, attempt: int) -> None:
+    """Route a failed pipeline run to S3 for retry/DLQ.
+    Nested try/except so a simultaneous Redis outage is logged, not silently swallowed (#9).
+    """
+    try:
+        celery_app.send_task(
+            "worker.tasks.handle_ai_failure",
+            args=[report_id, error_msg, attempt],
+            queue="ai_core:failed",
+        )
+        log.info("pipeline_failure_sent report_id=%s queue=ai_core:failed", report_id)
+    except Exception as broker_exc:
+        log.error(
+            "pipeline_failure_send_failed report_id=%s broker_error=%s original_error=%s",
+            report_id, broker_exc, error_msg,
+        )
 
 
 def _langsmith_tracer() -> LangChainTracer | None:
@@ -65,6 +108,8 @@ def _langsmith_tracer() -> LangChainTracer | None:
     name="ai_core.consumer.run_pipeline",
     queue="ai_core:process",
     max_retries=0,
+    soft_time_limit=180,   # raises SoftTimeLimitExceeded → caught below → ai_core:failed
+    time_limit=240,        # hard kill if the soft handler itself hangs
 )
 def run_pipeline(self, report_id: str, payload: dict) -> None:
     """Consume one report from ai_core:process, run the LangGraph pipeline.
@@ -111,11 +156,9 @@ def run_pipeline(self, report_id: str, payload: dict) -> None:
         )
         log.info("pipeline_result_sent report_id=%s queue=ai_core:results", report_id)
 
+    except SoftTimeLimitExceeded:
+        log.error("pipeline_timeout report_id=%s", report_id)
+        _send_failure(report_id, "pipeline exceeded 180 s soft time limit", payload.get("attempt", 0))
     except Exception as exc:
         log.exception("pipeline_failed report_id=%s error=%s", report_id, exc)
-        celery_app.send_task(
-            "worker.tasks.handle_ai_failure",
-            args=[report_id, str(exc), payload.get("attempt", 0)],
-            queue="ai_core:failed",
-        )
-        log.info("pipeline_failure_sent report_id=%s queue=ai_core:failed", report_id)
+        _send_failure(report_id, str(exc), payload.get("attempt", 0))
