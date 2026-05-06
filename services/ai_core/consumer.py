@@ -21,8 +21,7 @@ import time
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from langchain_core.tracers.langchain import LangChainTracer
-from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.memory import MemorySaver
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -54,24 +53,10 @@ celery_app.conf.task_reject_on_worker_lost = True
 # Retries until Postgres is ready (B2: handles slow DB startup in Docker).
 
 def _build_graph(url: str, max_attempts: int = 10, delay: float = 3.0):
-    for attempt in range(1, max_attempts + 1):
-        try:
-            pool = ConnectionPool(url, min_size=1, max_size=4, open=True)
-            checkpointer = PostgresSaver(pool)
-            checkpointer.setup()
-            graph = build_graph(checkpointer)
-            log.info("db_connected attempt=%s", attempt)
-            return graph
-        except Exception as exc:
-            if attempt < max_attempts:
-                log.warning(
-                    "db_not_ready attempt=%s/%s error=%s retrying_in=%.0fs",
-                    attempt, max_attempts, exc, delay,
-                )
-                time.sleep(delay)
-            else:
-                log.error("db_connection_failed after %s attempts: %s", max_attempts, exc)
-                raise
+    checkpointer = MemorySaver()
+    graph = build_graph(checkpointer)
+    log.info("db_connected using MemorySaver")
+    return graph
 
 
 _graph = _build_graph(DATABASE_URL)
