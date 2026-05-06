@@ -151,13 +151,56 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 
 ## Known Gaps
 
-### 1. `frontend/package-lock.json` is not committed
-Run `npm install` inside `frontend/` once locally to generate it, then commit the lock file. Without it Docker builds are not reproducible.
-
-### 2. S5 Notifications crashes without Twilio credentials
+### S5 Notifications crashes without Twilio credentials
 Start everything except notifications if you haven't set up Twilio yet:
 ```bash
 docker compose up postgres redis api ai_core worker frontend
 ```
+
+---
+
+## Testing & Seed Data
+
+### Seed the database
+
+Populates Postgres with realistic demo data (5 citizens, 6 officers, 5 crews, 24 reports, 21 tickets, 6 comments, 2 schedules). Idempotent — re-running never duplicates rows. Pass `--reset` to truncate first.
+
+```bash
+# Populate (skips existing rows)
+docker compose run --rm \
+    --volume "$(pwd)/scripts:/app/scripts" \
+    api python /app/scripts/seed.py
+
+# Truncate seeded tables first, then populate
+docker compose run --rm \
+    --volume "$(pwd)/scripts:/app/scripts" \
+    api python /app/scripts/seed.py --reset
+```
+
+### Seeded login credentials
+
+| Role | Email / username | Password |
+|------|------------------|----------|
+| Admin (bootstrap) | `admin` | value of `ADMIN_PASSWORD` in `.env` |
+| Admin (officer route) | `admin@civicpulse.gov` | `Officer123!` |
+| Officer (roads) | `roads.lead@civicpulse.gov` | `Officer123!` |
+| Officer (traffic) | `traffic.lead@civicpulse.gov` | `Officer123!` |
+| Officer (drainage) | `drainage.lead@civicpulse.gov` | `Officer123!` |
+| Officer (structures) | `structures.lead@civicpulse.gov` | `Officer123!` |
+| Officer (operations) | `ops.lead@civicpulse.gov` | `Officer123!` |
+| Citizens (5) | `alice@example.com` ... `esha@example.com` | `Citizen123!` |
+
+### Test plan
+
+`TEST_PLAN.md` contains a 68-case test matrix with success and failure scenarios for every backend service (S1 API, S2 AI Core, S3 Worker, S5 Notifications, Scheduler) plus end-to-end integration tests. Each case includes preconditions, executable steps, expected results, and pass criteria.
+
+### Running automated tests
+
+```bash
+pip install -r tests/requirements-dev.txt
+pytest tests/ -v
+```
+
+The existing AI Core unit tests (classify + image description) run fully offline with mocked Gemini responses. See `tests/ai_core/` for details.
 
 ---
