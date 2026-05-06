@@ -75,7 +75,8 @@ export interface Ticket {
   assigned_at:          string | null
   assigned_to:          string | null
   resolved_at:          string | null
-  lifecycle_status:     'open' | 'in_progress' | 'resolved' | 'failed' | null
+  lifecycle_status:     'open' | 'approved' | 'forwarded_to_maintenance' | 'in_progress' | 'resolved' | 'failed' | null
+  approved:             boolean
   lat:                  number | null
   lng:                  number | null
   address:              string | null
@@ -115,7 +116,9 @@ export interface TicketOverride {
   comment?:       string
   is_public?:     boolean
   assign_to?:     string
+  crew_id?:       string
   resolve?:       boolean
+  approve?:       boolean
 }
 
 export interface OfficerAuthResponse {

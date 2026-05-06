@@ -52,5 +52,13 @@ services:
     environment:
       VITE_API_BASE_URL: http://localhost:8000
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+    command: celery -A scheduler worker --beat --loglevel=info
+    depends_on: [redis, postgres]
+    env_file: .env
+
 volumes:
   pgdata:

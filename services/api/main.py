@@ -10,7 +10,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
 
-from routers import auth, reports, tickets, admin, events
+from routers import auth, reports, tickets, admin, events, schedule, crews
 
 app = FastAPI(title="CivicPulse API", version="1.0.0")
 
@@ -31,6 +31,8 @@ app.include_router(reports.router)
 app.include_router(tickets.router)
 app.include_router(admin.router)
 app.include_router(events.router)
+app.include_router(schedule.router)
+app.include_router(crews.router)
 
 
 @app.get("/health", tags=["health"])

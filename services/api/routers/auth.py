@@ -180,6 +180,7 @@ async def provision_officer(
             email=body.email,
             password_hash=_hash_password(body.password),
             role=body.role,
+            department=body.department,
         )
         db.add(officer)
         db.commit()

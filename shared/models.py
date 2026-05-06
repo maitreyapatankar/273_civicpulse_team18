@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, Float, ForeignKey, Index, Integer, Text, TIMESTAMP, text
+    Boolean, Column, Date, Float, ForeignKey, Index, Integer, Text, TIMESTAMP
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -64,11 +64,13 @@ class Ticket(Base):
     duplicate_of        = Column(UUID(as_uuid=True), ForeignKey("tickets.id"))
     cluster_count       = Column(Integer, default=1)
     work_order          = Column(JSONB)             # {crew_type, materials[], est_hours, notes}
+    approved            = Column(Boolean, default=False)
     dispatcher_override = Column(Boolean, default=False)
     override_by         = Column(Text)
     override_at         = Column(TIMESTAMP(timezone=True))
     assigned_at         = Column(TIMESTAMP(timezone=True))
     assigned_to         = Column(Text)
+    crew_id             = Column(UUID(as_uuid=True), ForeignKey("crews.id"), nullable=True)
     resolved_at         = Column(TIMESTAMP(timezone=True))
     created_at          = Column(TIMESTAMP(timezone=True), default=_now)
 
@@ -95,6 +97,17 @@ class Officer(Base):
     created_at    = Column(TIMESTAMP(timezone=True), default=_now)
 
 
+class Crew(Base):
+    __tablename__ = "crews"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_name  = Column(Text, nullable=False, unique=True)
+    crew_type  = Column(Text, nullable=False)  # roads|traffic|drainage|structures|operations
+    lead_name  = Column(Text, nullable=False)
+    lead_email = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), default=_now)
+
+
 class TicketComment(Base):
     __tablename__ = "ticket_comments"
 
@@ -107,8 +120,22 @@ class TicketComment(Base):
     created_at  = Column(TIMESTAMP(timezone=True), default=_now)
 
 
+class Schedule(Base):
+    __tablename__ = "schedules"
+
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    date       = Column(Date, nullable=False)
+    zone_lat   = Column(Float, nullable=False)   # rounded to 2 decimal places
+    zone_lng   = Column(Float, nullable=False)
+    crew_type  = Column(Text, nullable=False)    # roads|traffic|drainage|structures|operations
+    ticket_ids = Column(JSONB, nullable=False)   # ordered list of ticket UUIDs by urgency
+    est_hours  = Column(Float)
+    created_at = Column(TIMESTAMP(timezone=True), default=_now)
+
+
 # Indexes defined after classes so column references resolve correctly
 Index("idx_raw_reports_status", RawReport.status)
 Index("idx_tickets_urgency",    Ticket.urgency_score.desc())
 Index("idx_tickets_created",    Ticket.created_at.desc())
 Index("idx_ticket_comments_ticket", TicketComment.ticket_id)
+Index("idx_schedules_date",     Schedule.date.desc())

@@ -24,8 +24,10 @@ def derive_status(raw_status: Optional[str], ticket: Optional[Ticket]) -> str:
         return raw_status or "queued"
     if ticket and ticket.resolved_at:
         return "resolved"
-    if ticket and ticket.assigned_at:
-        return "in_progress"
+    if ticket and ticket.crew_id:
+        return "forwarded_to_maintenance"
+    if ticket and ticket.approved:
+        return "approved"
     if ticket:
         return "open"
     return raw_status or "queued"

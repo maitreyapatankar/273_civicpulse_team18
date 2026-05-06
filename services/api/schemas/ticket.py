@@ -25,11 +25,13 @@ class TicketResponse(BaseModel):
     duplicate_of:        Optional[UUID]
     cluster_count:       int = 1
     work_order:          Optional[Dict[str, Any]]
+    approved:            bool = False
     dispatcher_override: bool = False
     override_by:         Optional[str]
     override_at:         Optional[datetime]
     assigned_at:         Optional[datetime]
     assigned_to:         Optional[str]
+    crew_id:             Optional[UUID] = None
     resolved_at:         Optional[datetime]
     created_at:          datetime
     # Derived lifecycle status — open|in_progress|resolved|failed (or pre-AI: queued|processing)
@@ -78,7 +80,9 @@ class TicketOverride(BaseModel):
     notes:         Optional[str]   = None
     comment:       Optional[str]   = None
     is_public:     Optional[bool]  = None
-    assign_to:     Optional[str]   = None   # crew name / id; sets assigned_at = now()
+    approve:       Optional[bool]  = None   # true → sets approved = True
+    assign_to:     Optional[str]   = None   # free-text fallback
+    crew_id:       Optional[UUID]  = None   # assign to a real crew; sets assigned_to = team_name
     resolve:       Optional[bool]  = None   # true → sets resolved_at = now()
 
 

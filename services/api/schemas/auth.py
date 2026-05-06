@@ -14,6 +14,7 @@ class OfficerProvisionRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=256)
     role: str = "officer"  # officer | admin
+    department: Optional[str] = None  # roads | traffic | drainage | structures | operations
 
 
 class OfficerAuthResponse(BaseModel):
