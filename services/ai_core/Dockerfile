@@ -7,5 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# CMD is supplied by docker-compose:
-#   celery -A consumer worker --concurrency=4 -Q ai_core:process
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
+    CMD python healthcheck.py
+
+CMD ["celery", "-A", "consumer", "worker", "--concurrency=1", "-Q", "ai_core:process"]

@@ -14,9 +14,13 @@ from routers import auth, reports, tickets, admin, events
 
 app = FastAPI(title="CivicPulse API", version="1.0.0")
 
+# In production set ALLOWED_ORIGINS=https://your-app.vercel.app
+# Leave as * for local dev
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
