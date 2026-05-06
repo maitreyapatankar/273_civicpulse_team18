@@ -94,14 +94,21 @@ export default function SchedulePage() {
 
       <div className="max-w-7xl mx-auto px-4 py-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Today's Schedule</h1>
             <p className="text-sm text-slate-500 mt-0.5">
               {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
             </p>
           </div>
-          <div className="flex gap-6 text-center">
+          <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center">
+            <Link
+              to="/staff"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              ← Manage Tickets
+            </Link>
+            <div className="flex gap-6 text-center">
             <div>
               <p className="text-2xl font-bold text-slate-900">{zones.length}</p>
               <p className="text-xs text-slate-500">Zones</p>
@@ -113,6 +120,7 @@ export default function SchedulePage() {
             <div>
               <p className="text-2xl font-bold text-slate-900">{totalHours.toFixed(1)}h</p>
               <p className="text-xs text-slate-500">Est. Hours</p>
+            </div>
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import logging
 import os
 import smtplib
+import time
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -8,7 +9,6 @@ from email.mime.text import MIMEText
 
 import redis as redis_lib
 from celery import Celery
-from celery.schedules import crontab
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -26,12 +26,6 @@ REDIS_URL = os.environ["REDIS_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 celery_app = Celery("scheduler", broker=REDIS_URL)
-celery_app.conf.beat_schedule = {
-    "build-schedule-every-30-min": {
-        "task": "scheduler.build_schedule",
-        "schedule": crontab(minute="*/30"),
-    },
-}
 celery_app.conf.timezone = "UTC"
 
 # ---------------------------------------------------------------------------
@@ -100,7 +94,6 @@ def _send_email(to_address: str, subject: str, body: str) -> None:
 # Core task
 # ---------------------------------------------------------------------------
 
-@celery_app.task(name="scheduler.build_schedule")
 def build_schedule() -> None:
     log.info("build_schedule started")
     today = date.today()
@@ -202,7 +195,7 @@ def build_schedule() -> None:
                 ticket_ids_in_zone = [str(t.id) for t in tickets_in_zone]
                 db.execute(text("""
                     UPDATE tickets
-                    SET crew_id = :crew_id, assigned_to = :team_name, assigned_at = now()
+                    SET crew_id = :crew_id, assigned_to = :team_name, assigned_at = now(), lifecycle_status = 'forwarded_to_maintenance'
                     WHERE id = ANY(cast(:ids as uuid[]))
                       AND crew_id IS NULL
                 """), {
@@ -246,3 +239,12 @@ def build_schedule() -> None:
     log.info("build_schedule complete")
 
 
+if __name__ == "__main__":
+    log.info("Starting continuous scheduler — rebuilding every 15 seconds")
+    while True:
+        try:
+            build_schedule()
+            time.sleep(15)
+        except Exception as exc:
+            log.error("Error in scheduler: %s", exc)
+            time.sleep(15)

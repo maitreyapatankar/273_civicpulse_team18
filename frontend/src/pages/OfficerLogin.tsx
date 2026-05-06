@@ -20,12 +20,15 @@ export default function OfficerLogin() {
         email,
         password,
       })
+      console.log('Login successful, storing token:', data.access_token.substring(0, 20) + '...')
       localStorage.setItem('access_token', data.access_token)
       if (data.name) localStorage.setItem('officer_name', data.name)
       if (data.email) localStorage.setItem('officer_email', data.email)
       if (data.role) localStorage.setItem('officer_role', data.role)
       if (data.officer_id) localStorage.setItem('officer_id', data.officer_id)
+      console.log('Token stored, navigating to /staff...')
       navigate('/staff', { replace: true })
+      console.log('Navigate called')
     } catch (error) {
       // F20: 401 means wrong credentials on a login form, not an expired session.
       // For everything else (network down, server error) use the shared extractor.

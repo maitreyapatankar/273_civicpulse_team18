@@ -81,6 +81,7 @@ class TicketOverride(BaseModel):
     comment:       Optional[str]   = None
     is_public:     Optional[bool]  = None
     approve:       Optional[bool]  = None   # true → sets approved = True
+    reject:        Optional[bool]  = None   # true → sets lifecycle_status = 'failed'
     assign_to:     Optional[str]   = None   # free-text fallback
     crew_id:       Optional[UUID]  = None   # assign to a real crew; sets assigned_to = team_name
     resolve:       Optional[bool]  = None   # true → sets resolved_at = now()

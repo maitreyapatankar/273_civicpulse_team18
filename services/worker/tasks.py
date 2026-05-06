@@ -40,7 +40,7 @@ from celery import Celery
 from sqlalchemy import func
 
 from shared.db import get_db
-from shared.models import Officer, RawReport, Ticket
+from shared.models import Crew, RawReport, Ticket
 
 # ── Category-code prefix → department ────────────────────────────────────────
 # Matches taxonomy.json categories to the five officer departments.
@@ -79,45 +79,41 @@ log = logging.getLogger(__name__)
 
 
 def _auto_assign(db, ticket: Ticket, category_code: Optional[str]) -> None:
-    """Assign the ticket to the officer in the matching department with the
-    fewest currently open (unresolved) tickets.  Falls back to any officer
-    if none are configured for that department.  Silently no-ops when the
-    officers table is empty.
+    """Assign the ticket to the crew lead in the matching crew_type with the
+    fewest currently open (unresolved) tickets. Silently no-ops when no crews
+    are available for that crew_type.
     """
-    dept = _CATEGORY_DEPT.get((category_code or "")[:2], "operations")
+    crew_type = _CATEGORY_DEPT.get((category_code or "")[:2], "operations")
 
     candidates = (
-        db.query(Officer)
-          .filter(Officer.department == dept)
+        db.query(Crew)
+          .filter(Crew.crew_type == crew_type)
           .all()
     )
-    if not candidates:
-        # Fallback: any officer regardless of department.
-        candidates = db.query(Officer).all()
 
     if not candidates:
-        log.warning("auto_assign no officers found dept=%s ticket_id=%s", dept, ticket.id)
+        log.warning("auto_assign no crews found crew_type=%s ticket_id=%s", crew_type, ticket.id)
         return
 
-    # C3: count open tickets per officer keyed by ID, not name, so two officers
-    # with the same name don't share a counter.  One query per candidate avoids
-    # the name-collision problem without requiring a schema change.
+    # Count open tickets per crew, keyed by crew ID
     open_counts: dict[str, int] = {
-        str(o.id): (
+        str(c.id): (
             db.query(func.count(Ticket.id))
-              .filter(Ticket.assigned_to == o.name)
+              .filter(Ticket.assigned_to == c.team_name)
               .filter(Ticket.resolved_at.is_(None))
               .scalar() or 0
         )
-        for o in candidates
+        for c in candidates
     }
 
-    chosen = min(candidates, key=lambda o: open_counts.get(str(o.id), 0))
-    ticket.assigned_to = chosen.name
+    chosen = min(candidates, key=lambda c: open_counts.get(str(c.id), 0))
+    ticket.assigned_to = chosen.team_name
+    ticket.crew_id = chosen.id
     ticket.assigned_at = datetime.now(timezone.utc)
+    ticket.lifecycle_status = 'forwarded_to_maintenance'
     log.info(
-        "auto_assign ticket_id=%s dept=%s officer=%s open_tickets=%s",
-        ticket.id, dept, chosen.name, open_counts.get(str(chosen.id), 0),
+        "auto_assign ticket_id=%s crew_type=%s crew=%s open_tickets=%s",
+        ticket.id, crew_type, chosen.team_name, open_counts.get(str(chosen.id), 0),
     )
 
 
@@ -221,8 +217,8 @@ def handle_ai_result(report_id: str, enriched: dict):
             existing.duplicate_of              = master_id
             enriched_cluster                   = enriched.get("cluster_count") or 1
             existing.cluster_count             = max(existing.cluster_count or 1, enriched_cluster)
-            # Auto-assign only if not yet assigned (preserve manual assignments).
-            if not existing.assigned_to:
+            # Auto-assign to crew if not yet assigned
+            if not existing.crew_id:
                 _auto_assign(db, existing, enriched.get("category_code"))
             ticket_id = str(existing.id)
         else:
@@ -244,10 +240,7 @@ def handle_ai_result(report_id: str, enriched: dict):
                 duplicate_of              = master_id,
             )
             db.add(ticket)
-            db.flush()  # populate ticket.id before _auto_assign reads it
-            # Duplicates are shadow tickets — assignment lives on the master.
-            if not is_dup:
-                _auto_assign(db, ticket, enriched.get("category_code"))
+            db.flush()  # populate ticket.id before response
             ticket_id = str(ticket.id)
 
         # For duplicates, propagate the re-scored urgency back to the master ticket

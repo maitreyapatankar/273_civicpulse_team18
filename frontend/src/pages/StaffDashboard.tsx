@@ -18,13 +18,6 @@ function isTokenExpired(): boolean {
   }
 }
 
-function clearOfficerSession() {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('officer_id')
-  localStorage.removeItem('officer_name')
-  localStorage.removeItem('officer_role')
-}
-
 function formatDate(iso?: string | null): string {
   if (!iso) return '—'
   return new Date(iso).toLocaleString(undefined, {
@@ -67,6 +60,9 @@ function TicketCard({ ticket, crews }: {
   const [isPublic, setIsPublic] = useState(true)
   const [selectedCrewId, setSelectedCrewId] = useState('')
   const [savedMsg, setSavedMsg] = useState('')
+  const [showApprovalModal, setShowApprovalModal] = useState(false)
+  const [suggestedCrewId, setSuggestedCrewId] = useState<string | null>(null)
+  const [approvalCrewId, setApprovalCrewId] = useState('')
 
   function flash(msg: string) {
     setSavedMsg(msg)
@@ -90,9 +86,23 @@ function TicketCard({ ticket, crews }: {
     onSuccess: () => { flash('Override saved'); invalidate() },
   })
 
+  const suggestCrewMutation = useMutation({
+    mutationFn: () => api.get(`/tickets/${ticket.id}/suggest-crew`).then((r: any) => r.data),
+    onSuccess: (data: any) => {
+      setSuggestedCrewId(data.suggested_crew_id)
+      setApprovalCrewId(data.suggested_crew_id)
+      setShowApprovalModal(true)
+    },
+  })
+
   const approveMutation = useMutation({
-    mutationFn: () => api.patch(`/tickets/${ticket.id}`, { approve: true } as TicketOverride).then((r) => r.data),
-    onSuccess: () => { flash('Approved'); invalidate() },
+    mutationFn: () => api.patch(`/tickets/${ticket.id}`, { approve: true, crew_id: approvalCrewId } as TicketOverride).then((r: any) => r.data),
+    onSuccess: () => { flash('Approved'); invalidate(); setShowApprovalModal(false) },
+  })
+
+  const rejectMutation = useMutation({
+    mutationFn: () => api.patch(`/tickets/${ticket.id}`, { reject: true } as TicketOverride).then((r) => r.data),
+    onSuccess: () => { flash('Rejected'); invalidate() },
   })
 
   const assignMutation = useMutation({
@@ -143,6 +153,33 @@ function TicketCard({ ticket, crews }: {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
+          {!ticket.approved && ticket.lifecycle_status !== 'forwarded_to_maintenance' && (
+            <>
+              <button
+                onClick={() => suggestCrewMutation.mutate()}
+                disabled={suggestCrewMutation.isPending}
+                className="rounded-2xl bg-emerald-600 text-white px-4 py-2 text-sm font-semibold hover:bg-emerald-700 disabled:opacity-60 transition"
+              >
+                {suggestCrewMutation.isPending ? 'Loading crews…' : 'Approve'}
+              </button>
+              <button
+                onClick={() => rejectMutation.mutate()}
+                disabled={rejectMutation.isPending}
+                className="rounded-2xl bg-rose-600 text-white px-4 py-2 text-sm font-semibold hover:bg-rose-700 disabled:opacity-60 transition"
+              >
+                {rejectMutation.isPending ? 'Rejecting…' : 'Reject'}
+              </button>
+            </>
+          )}
+          {ticket.lifecycle_status === 'forwarded_to_maintenance' && !ticket.resolved_at && (
+            <button
+              onClick={() => resolveMutation.mutate()}
+              disabled={resolveMutation.isPending}
+              className="rounded-2xl bg-blue-600 text-white px-4 py-2 text-sm font-semibold hover:bg-blue-700 disabled:opacity-60 transition"
+            >
+              {resolveMutation.isPending ? 'Resolving…' : 'Mark Resolved'}
+            </button>
+          )}
           <button
             onClick={() => setExpanded((v) => !v)}
             className="rounded-2xl border border-slate-200 text-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-50 transition"
@@ -158,6 +195,117 @@ function TicketCard({ ticket, crews }: {
       {/* ── Expanded section ── */}
       {expanded && (
         <div className="border-t border-slate-200 px-6 pb-6 pt-5 space-y-5 bg-white/70">
+
+          {/* AI reasoning */}
+          {ticket.ai_reasoning && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em] mb-2">AI reasoning</p>
+              <p className="text-sm text-slate-700 leading-relaxed">{ticket.ai_reasoning}</p>
+            </div>
+          )}
+
+          {/* Officer approval */}
+          {!ticket.approved && ticket.lifecycle_status !== 'forwarded_to_maintenance' && (
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-blue-700 uppercase tracking-[0.2em]">Officer approval</p>
+                <p className="text-xs text-slate-600 mt-1">Approve to move this ticket to pending and enable crew scheduling.</p>
+              </div>
+              <button
+                onClick={() => suggestCrewMutation.mutate()}
+                disabled={suggestCrewMutation.isPending}
+                className="w-full rounded-xl bg-blue-600 text-white text-sm font-semibold py-2.5 hover:bg-blue-700 disabled:opacity-60 transition"
+              >
+                {suggestCrewMutation.isPending ? 'Loading crews…' : 'Approve & Select Crew'}
+              </button>
+            </div>
+          )}
+
+          {/* Crew reassignment */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Crew assignment</p>
+              {ticket.assigned_to && (
+                <p className="text-xs text-slate-600 mt-1">Currently: <span className="font-medium text-slate-800">{ticket.assigned_to}</span></p>
+              )}
+            </div>
+            <select
+              value={selectedCrewId}
+              onChange={(e) => setSelectedCrewId(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 bg-white"
+            >
+              <option value="">— Select a crew —</option>
+              {crews.map((c) => (
+                <option key={c.id} value={c.id}>{c.team_name} ({c.crew_type}) · {c.lead_name}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => selectedCrewId && assignMutation.mutate(selectedCrewId)}
+              disabled={assignMutation.isPending || !selectedCrewId}
+              className="w-full rounded-xl bg-slate-700 text-white text-sm font-semibold py-2 hover:bg-slate-800 disabled:opacity-50 transition"
+            >
+              {assignMutation.isPending ? 'Assigning…' : ticket.assigned_to ? 'Reassign crew' : 'Assign crew'}
+            </button>
+          </div>
+
+          {/* Override priority (simplified) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Override priority</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-400 mb-1.5 block">Issue type</label>
+                <select
+                  value={overrideIssueType}
+                  onChange={(e) => setOverrideIssueType(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="">— unchanged —</option>
+                  {ISSUE_TYPES.map((t) => (
+                    <option key={t} value={t}>{t.replace('_', ' ')}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 mb-1.5 block">Priority</label>
+                <select
+                  value={overrideScore}
+                  onChange={(e) => setOverrideScore(Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  {[5, 4, 3, 2, 1].map((s) => (
+                    <option key={s} value={s}>P{s}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-slate-400 mb-1.5 block">Note (optional)</label>
+              <input
+                type="text"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                placeholder="Add a note…"
+                className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
+              <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-500">
+                <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500" />
+                Visible to citizen
+              </label>
+            </div>
+            <button
+              onClick={() => overrideMutation.mutate({
+                issue_type: overrideIssueType || undefined,
+                urgency_score: overrideScore,
+                comment: comment || undefined,
+                is_public: comment ? isPublic : undefined,
+              })}
+              disabled={overrideMutation.isPending}
+              className="w-full rounded-lg bg-slate-700 text-white text-xs font-semibold py-1.5 hover:bg-slate-800 disabled:opacity-60 transition"
+            >
+              {overrideMutation.isPending ? 'Saving…' : 'Apply'}
+            </button>
+          </div>
 
           {/* Customer report */}
           {(detailQuery.isLoading) && (
@@ -185,35 +333,6 @@ function TicketCard({ ticket, crews }: {
                     : 'AI trusted the image over the text.'}
                 </div>
               )}
-            </div>
-          )}
-
-          {/* AI summary */}
-          {ticket.ai_reasoning && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em] mb-2">AI reasoning</p>
-              <p className="text-sm text-slate-700 leading-relaxed">{ticket.ai_reasoning}</p>
-            </div>
-          )}
-
-          {/* Classification */}
-          {detailQuery.data && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                <p className="text-xs text-slate-400 uppercase tracking-[0.2em]">Category</p>
-                <p className="font-semibold text-slate-900 mt-1">{detailQuery.data.category_name || '—'}</p>
-                <p className="text-xs text-slate-500">{detailQuery.data.subcategory_name || ''}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                <p className="text-xs text-slate-400 uppercase tracking-[0.2em]">Severity</p>
-                <p className="font-semibold text-slate-900 mt-1">{detailQuery.data.severity ?? '—'} / 5</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                <p className="text-xs text-slate-400 uppercase tracking-[0.2em]">AI confidence</p>
-                <p className="font-semibold text-slate-900 mt-1">
-                  {detailQuery.data.confidence != null ? `${Math.round(detailQuery.data.confidence * 100)}%` : '—'}
-                </p>
-              </div>
             </div>
           )}
 
@@ -248,123 +367,90 @@ function TicketCard({ ticket, crews }: {
             </div>
           )}
 
-          {/* ── Actions ── */}
-          <div className="grid gap-4 sm:grid-cols-2">
-
-            {/* Override priority */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Override priority</p>
+          {/* Resolution */}
+          {ticket.lifecycle_status === 'forwarded_to_maintenance' && !ticket.resolved_at && (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 space-y-3">
               <div>
-                <label className="text-xs text-slate-400 mb-1 block">Issue type</label>
-                <select
-                  value={overrideIssueType}
-                  onChange={(e) => setOverrideIssueType(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                >
-                  <option value="">— unchanged —</option>
-                  {ISSUE_TYPES.map((t) => (
-                    <option key={t} value={t}>{t.replace('_', ' ')}</option>
-                  ))}
-                </select>
+                <p className="text-xs font-semibold text-emerald-700 uppercase tracking-[0.2em]">Resolution</p>
+                <p className="text-xs text-slate-600 mt-1">Mark as done when crew confirms work is complete.</p>
               </div>
-              <div>
-                <label className="text-xs text-slate-400 mb-1 block">Urgency score</label>
-                <select
-                  value={overrideScore}
-                  onChange={(e) => setOverrideScore(Number(e.target.value))}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                >
-                  {[5, 4, 3, 2, 1].map((s) => (
-                    <option key={s} value={s}>{s} — {['', 'P5 Lowest', 'P4 Low', 'P3 Medium', 'P2 High', 'P1 Critical'][s]}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-slate-400 mb-1 block">Comment (optional)</label>
-                <textarea
-                  rows={2}
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  placeholder="Note for the citizen…"
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                />
-                <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-500">
-                  <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500" />
-                  Visible to citizen
-                </label>
-              </div>
-              <button
-                onClick={() => overrideMutation.mutate({
-                  issue_type: overrideIssueType || undefined,
-                  urgency_score: overrideScore,
-                  comment: comment || undefined,
-                  is_public: comment ? isPublic : undefined,
-                })}
-                disabled={overrideMutation.isPending}
-                className="w-full rounded-xl bg-slate-900 text-white text-sm font-semibold py-2 hover:bg-slate-800 disabled:opacity-60 transition"
-              >
-                {overrideMutation.isPending ? 'Saving…' : 'Apply override'}
-              </button>
-            </div>
-
-            {/* Crew assignment */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Crew assignment</p>
-              {ticket.assigned_to && (
-                <p className="text-xs text-slate-500">Currently: <span className="font-medium text-slate-800">{ticket.assigned_to}</span></p>
-              )}
-              <select
-                value={selectedCrewId}
-                onChange={(e) => setSelectedCrewId(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 bg-white"
-              >
-                <option value="">— Select a crew —</option>
-                {crews.map((c) => (
-                  <option key={c.id} value={c.id}>{c.team_name} ({c.crew_type}) · {c.lead_name}</option>
-                ))}
-              </select>
-              <button
-                onClick={() => selectedCrewId && assignMutation.mutate(selectedCrewId)}
-                disabled={assignMutation.isPending || !selectedCrewId}
-                className="w-full rounded-xl bg-slate-900 text-white text-sm font-semibold py-2 hover:bg-slate-800 disabled:opacity-50 transition"
-              >
-                {assignMutation.isPending ? 'Assigning…' : ticket.assigned_to ? 'Reassign crew' : 'Assign crew'}
-              </button>
-            </div>
-          </div>
-
-          {/* Approve + Resolve */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-2xl border border-blue-200 bg-white p-4">
-              <p className="text-xs font-semibold text-blue-700 uppercase tracking-[0.2em] mb-2">Officer approval</p>
-              <p className="text-xs text-slate-500 mb-3">
-                Approve so the scheduler can assign this to a crew.
-              </p>
-              <button
-                onClick={() => approveMutation.mutate()}
-                disabled={approveMutation.isPending || Boolean(ticket.approved)}
-                className="w-full rounded-xl bg-blue-600 text-white text-sm font-semibold py-2 hover:bg-blue-700 disabled:opacity-50 transition"
-              >
-                {ticket.approved ? 'Already approved' : approveMutation.isPending ? 'Approving…' : 'Approve ticket'}
-              </button>
-            </div>
-
-            <div className="rounded-2xl border border-emerald-200 bg-white p-4">
-              <p className="text-xs font-semibold text-emerald-700 uppercase tracking-[0.2em] mb-2">Resolution</p>
-              <p className="text-xs text-slate-500 mb-3">
-                Mark as done when crew confirms work is complete.
-              </p>
               <button
                 onClick={() => resolveMutation.mutate()}
-                disabled={resolveMutation.isPending || Boolean(ticket.resolved_at)}
-                className="w-full rounded-xl bg-emerald-600 text-white text-sm font-semibold py-2 hover:bg-emerald-700 disabled:opacity-50 transition"
+                disabled={resolveMutation.isPending}
+                className="w-full rounded-xl bg-emerald-600 text-white text-sm font-semibold py-2.5 hover:bg-emerald-700 disabled:opacity-60 transition"
               >
-                {ticket.resolved_at ? 'Already resolved' : resolveMutation.isPending ? 'Resolving…' : 'Mark resolved'}
+                {resolveMutation.isPending ? 'Resolving…' : 'Mark Resolved'}
+              </button>
+            </div>
+          )}
+
+          {/* Metadata footer */}
+          {detailQuery.data && (
+            <div className="flex flex-wrap gap-3 text-xs">
+              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
+                <p className="text-slate-400 uppercase tracking-[0.1em]">Category</p>
+                <p className="font-medium text-slate-900">{detailQuery.data.category_name || '—'}</p>
+                {detailQuery.data.subcategory_name && (
+                  <p className="text-slate-500">{detailQuery.data.subcategory_name}</p>
+                )}
+              </div>
+              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
+                <p className="text-slate-400 uppercase tracking-[0.1em]">Severity</p>
+                <p className="font-medium text-slate-900">{detailQuery.data.severity ?? '—'} / 5</p>
+              </div>
+              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
+                <p className="text-slate-400 uppercase tracking-[0.1em]">AI Confidence</p>
+                <p className="font-medium text-slate-900">
+                  {detailQuery.data.confidence != null ? `${Math.round(detailQuery.data.confidence * 100)}%` : '—'}
+                </p>
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
+
+      {/* Approval Modal */}
+      {showApprovalModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-slate-900">Approve & Assign Crew</h2>
+            <p className="text-sm text-slate-600">Select which crew should handle this ticket.</p>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-[0.15em]">
+                Suggested crew
+              </label>
+              <select
+                value={approvalCrewId}
+                onChange={(e) => setApprovalCrewId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 bg-white"
+              >
+                {crews.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.team_name} ({c.crew_type}) · {c.lead_name}
+                    {c.id === suggestedCrewId ? ' — recommended' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex gap-3 pt-3">
+              <button
+                onClick={() => setShowApprovalModal(false)}
+                className="flex-1 rounded-xl border border-slate-200 text-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => approveMutation.mutate()}
+                disabled={approveMutation.isPending || !approvalCrewId}
+                className="flex-1 rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-semibold hover:bg-emerald-700 disabled:opacity-60 transition"
+              >
+                {approveMutation.isPending ? 'Approving…' : 'Approve & Assign'}
               </button>
             </div>
           </div>
-
         </div>
       )}
     </div>
@@ -373,17 +459,12 @@ function TicketCard({ ticket, crews }: {
 
 export default function StaffDashboard() {
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState<'open' | 'review'>('open')
+  const [tab, setTab] = useState<'open' | 'review' | 'pending' | 'resolved'>('open')
   const [search, setSearch] = useState('')
-
-  const handleLogout = () => {
-    clearOfficerSession()
-    window.location.href = '/officer/login'
-  }
 
   const { data: openTickets = [], isLoading, isError, refetch } = useQuery<Ticket[]>({
     queryKey: ['staff-tickets'],
-    queryFn: () => api.get('/tickets?status=open').then((r) => r.data),
+    queryFn: () => api.get('/tickets?status=all').then((r) => r.data),
     refetchInterval: 60_000,
   })
 
@@ -392,9 +473,11 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
     queryFn: () => api.get('/crews').then((r) => r.data),
   })
 
-  const open   = openTickets.filter((t) => (t.confidence ?? 1) >= 0.70)
-  const review = openTickets.filter((t) => (t.confidence ?? 1) < 0.70)
-  const baseList = tab === 'open' ? open : review
+  const open    = openTickets.filter((t) => !t.approved && !t.needs_review && t.lifecycle_status !== 'forwarded_to_maintenance' && !t.resolved_at)
+  const review  = openTickets.filter((t) => !t.approved && t.needs_review && t.lifecycle_status !== 'forwarded_to_maintenance' && !t.resolved_at)
+  const pending = openTickets.filter((t) => t.lifecycle_status === 'forwarded_to_maintenance' && !t.resolved_at)
+  const resolved = openTickets.filter((t) => t.resolved_at !== null)
+  const baseList = tab === 'open' ? open : tab === 'review' ? review : tab === 'pending' ? pending : resolved
 
   const visible = baseList.filter((t) => {
     const q = search.trim().toLowerCase()
@@ -417,25 +500,25 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
             <h1 className="font-display text-3xl sm:text-4xl text-slate-900 mt-3">Ticket queue</h1>
             <p className="text-sm text-slate-500 mt-2">Review, approve, and manage all submitted reports.</p>
           </div>
-          <div className="flex gap-2 self-start lg:self-auto">
+          <div className="flex gap-2 self-start lg:self-auto flex-wrap">
             <Link
               to="/officer/dashboard"
               className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
             >
               All Tickets
             </Link>
+            <button
+              onClick={() => setTab('pending')}
+              className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 transition-colors"
+            >
+              Pending Tickets
+            </button>
             <Link
               to="/officer/schedule"
               className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
             >
               View Schedule →
             </Link>
-            <button
-              onClick={handleLogout}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              Logout
-            </button>
           </div>
         </header>
 
@@ -449,8 +532,9 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
           />
           <div className="flex gap-3 flex-wrap">
             {([
-              { key: 'open',   label: `Open (${open.length})` },
-              { key: 'review', label: `Needs review (${review.length})` },
+              { key: 'open',    label: `Open (${open.length})` },
+              { key: 'review',  label: `Needs review (${review.length})` },
+              { key: 'resolved', label: `Resolved (${resolved.length})` },
             ] as const).map((item) => (
               <button
                 key={item.key}

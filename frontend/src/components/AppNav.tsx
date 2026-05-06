@@ -10,7 +10,7 @@ interface AppNavProps {
 export default function AppNav({ activeRole = 'public' }: AppNavProps) {
   const navigate = useNavigate()
   const isStaffActive = activeRole === 'officer'
-  const officerToken = localStorage.getItem('jwt_token') || ''
+  const officerToken = localStorage.getItem('access_token') || ''
   const isLoggedIn = Boolean(officerToken) && !isTokenExpired(officerToken)
 
   if (officerToken && !isLoggedIn) {

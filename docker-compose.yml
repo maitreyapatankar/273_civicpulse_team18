@@ -83,7 +83,7 @@ services:
     build:
       context: .
       dockerfile: services/scheduler/Dockerfile
-    command: celery -A scheduler worker --beat --loglevel=info
+    command: python -u scheduler.py
     depends_on: [redis, postgres]
     env_file: .env
 

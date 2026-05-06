@@ -37,12 +37,19 @@ function relativeTime(iso: string): string {
 
 export default function DispatcherDashboard() {
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'resolved'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'in_progress' | 'resolved'>('all')
 
-  const { data: tickets = [], isLoading, isError } = useQuery<Ticket[]>({
-    queryKey: ['all-tickets', statusFilter],
-    queryFn: () => api.get(`/tickets?status=${statusFilter}`).then((r) => r.data),
+  const { data: allTickets = [], isLoading, isError } = useQuery<Ticket[]>({
+    queryKey: ['all-tickets'],
+    queryFn: () => api.get('/tickets?status=all').then((r) => r.data),
     refetchInterval: 60_000,
+  })
+
+  const tickets = allTickets.filter((t) => {
+    if (statusFilter === 'open') return !t.approved && t.lifecycle_status === 'open'
+    if (statusFilter === 'in_progress') return t.lifecycle_status === 'forwarded_to_maintenance'
+    if (statusFilter === 'resolved') return t.resolved_at !== null
+    return true
   })
 
   const visible = tickets.filter((t) => {
@@ -82,8 +89,8 @@ export default function DispatcherDashboard() {
             placeholder="Search by issue, address or crew…"
             className="flex-1 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 bg-white/80"
           />
-          <div className="flex gap-2">
-            {(['all', 'open', 'resolved'] as const).map((s) => (
+          <div className="flex gap-2 flex-wrap">
+            {(['all', 'open', 'in_progress', 'resolved'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s)}
@@ -93,7 +100,7 @@ export default function DispatcherDashboard() {
                     : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
               >
-                {s}
+                {s === 'in_progress' ? 'In Progress' : s}
               </button>
             ))}
           </div>

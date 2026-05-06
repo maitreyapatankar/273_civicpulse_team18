@@ -16,6 +16,7 @@ def derive_status(raw_status: Optional[str], ticket: Optional[Ticket]) -> str:
     """Compute the citizen-facing lifecycle status from raw_report + ticket fields.
 
     Order of checks matters: failed beats everything; resolved beats in_progress;
+    forwarded_to_maintenance requires BOTH approved=true AND crew assigned;
     pre-AI states (queued/processing) win when no ticket has been created yet.
     """
     if raw_status == "failed":
@@ -24,7 +25,8 @@ def derive_status(raw_status: Optional[str], ticket: Optional[Ticket]) -> str:
         return raw_status or "queued"
     if ticket and ticket.resolved_at:
         return "resolved"
-    if ticket and ticket.crew_id:
+    # Only forwarded_to_maintenance if BOTH approved AND crew assigned
+    if ticket and ticket.approved and ticket.crew_id:
         return "forwarded_to_maintenance"
     if ticket and ticket.approved:
         return "approved"
@@ -59,9 +61,10 @@ async def list_tickets(
 
         if status == "open":
             q = q.filter(Ticket.resolved_at.is_(None))
+            q = q.filter(Ticket.crew_id.is_(None))  # Exclude assigned tickets from open
         elif status == "resolved":
             q = q.filter(Ticket.resolved_at.isnot(None))
-        # "all" → no filter
+        # else: status == "all" returns all tickets (both resolved and unresolved)
 
         tickets = (
             q.order_by(Ticket.urgency_score.desc())

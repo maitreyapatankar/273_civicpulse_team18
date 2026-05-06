@@ -68,6 +68,66 @@ def _publish(channel: str, ticket_id: str, report_id: str | None) -> None:
         pass
 
 
+_CATEGORY_DEPT: dict[str, str] = {
+    "RD": "roads",       "SG": "roads",       "MK": "roads",       "SW": "roads",
+    "TF": "traffic",     "SL": "traffic",     "DR": "drainage",    "ST": "structures",
+    "OT": "operations",
+}
+
+
+def _suggest_crew(db, ticket: Ticket) -> Crew | None:
+    """Suggest the best crew for a ticket using the same load-balancing logic as worker."""
+    crew_type = _CATEGORY_DEPT.get((ticket.category_code or "")[:2], "operations")
+
+    from sqlalchemy import func
+    candidates = db.query(Crew).filter(Crew.crew_type == crew_type).all()
+    if not candidates:
+        return None
+
+    open_counts: dict[str, int] = {
+        str(c.id): (
+            db.query(func.count(Ticket.id))
+              .filter(Ticket.assigned_to == c.team_name)
+              .filter(Ticket.resolved_at.is_(None))
+              .scalar() or 0
+        )
+        for c in candidates
+    }
+
+    return min(candidates, key=lambda c: open_counts.get(str(c.id), 0))
+
+
+# ── GET /tickets/:id/suggest-crew ────────────────────────────────────────────
+
+@router.get("/{ticket_id}/suggest-crew")
+async def suggest_crew(
+    ticket_id: UUID,
+    payload: dict = Depends(require_officer_jwt),
+):
+    """Suggest the best crew to assign to this ticket based on load balancing."""
+    with get_db() as db:
+        ticket = db.get(Ticket, ticket_id)
+        if not ticket:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
+
+        suggested_crew = _suggest_crew(db, ticket)
+        if not suggested_crew:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No crews available for this category",
+            )
+
+        return {
+            "suggested_crew_id": str(suggested_crew.id),
+            "team_name": suggested_crew.team_name,
+            "crew_type": suggested_crew.crew_type,
+            "lead_name": suggested_crew.lead_name,
+        }
+
+
 # ── PATCH /tickets/:id ────────────────────────────────────────────────────────
 
 @router.patch("/{ticket_id}", response_model=TicketResponse)
@@ -95,6 +155,9 @@ async def override_ticket(
 
         if override.approve is True:
             ticket.approved = True
+
+        if override.reject is True:
+            ticket.lifecycle_status = 'failed'
 
         if override.urgency_score is not None:
             ticket.urgency_score = override.urgency_score
@@ -127,6 +190,10 @@ async def override_ticket(
             ticket.assigned_to = override.assign_to or None
             ticket.assigned_at = now if override.assign_to else None
             assigned = True
+
+        # When approved and crew is assigned, move to pending state
+        if override.approve is True and ticket.crew_id is not None:
+            ticket.lifecycle_status = 'forwarded_to_maintenance'
 
         if override.resolve is True:
             ticket.resolved_at = now

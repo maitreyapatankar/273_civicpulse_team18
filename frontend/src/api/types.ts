@@ -119,6 +119,7 @@ export interface TicketOverride {
   crew_id?:       string
   resolve?:       boolean
   approve?:       boolean
+  reject?:        boolean
 }
 
 export interface OfficerAuthResponse {
