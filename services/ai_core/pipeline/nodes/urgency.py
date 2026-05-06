@@ -26,6 +26,7 @@ Post-processing (applied even to LLM output):
 import json
 import logging
 import os
+import re
 
 import google.generativeai as genai
 
@@ -136,6 +137,8 @@ SCORING GUIDANCE:
 - The classifier severity (1–5) anchors the score; deviate by at most 1 point without
   clear supporting evidence in the image or text.
 - reasoning must be one sentence, written for a dispatcher, not a data scientist.
+- Base your reasoning on the classification, severity, and evidence in the report or image.
+- Do NOT mention multiple reports, clusters, or reporting rate unless "Reports in cluster" is provided and > 1.
 
 Respond ONLY with valid JSON. No explanation. No markdown. No preamble.
 {
@@ -151,18 +154,20 @@ Respond ONLY with valid JSON. No explanation. No markdown. No preamble.
 
 
 def _build_user_msg(state: PipelineState) -> str:
+    cluster_count = state.get("cluster_count", 1)
     rate = state.get("cluster_rate_per_hour") or 0.0
     lines = [
         f'Category: {state.get("category_name")} ({state.get("category_code")})',
         f'Subcategory: {state.get("subcategory_name")} ({state.get("subcategory_code")})',
         f'Severity (classifier): {state.get("severity")}/5',
         f'Classifier confidence: {(state.get("confidence") or 0.0):.0%}',
-        f'Reports in cluster: {state.get("cluster_count", 1)}',
-        f'Reporting rate: {rate:.1f} reports/hour',
         f'Location: {state.get("address") or "coordinates only"}',
         "",
         f'Citizen report: "{state.get("text")}"',
     ]
+    if cluster_count > 1:
+        lines.insert(4, f'Reporting rate: {rate:.1f} reports/hour')
+        lines.insert(4, f'Reports in cluster: {cluster_count}')
     if state.get("image_desc"):
         lines.append(f'Image description: {state["image_desc"]}')
     else:
@@ -192,10 +197,13 @@ def _check_p1(state: PipelineState) -> dict | None:
         (state.get("text") or "").lower(),
         (state.get("image_desc") or "").lower(),
     ]))
+    issue_name = state.get("subcategory_name") or state.get("category_name") or "Issue"
     for kw in P1_KEYWORDS:
-        if kw in combined:
+        if re.search(r'\b' + re.escape(kw) + r'\b', combined):
             label = kw.capitalize()
-            return _p1_result(f"{label} reported — critical safety hazard, immediate response required.")
+            return _p1_result(
+                f"{issue_name} — {label} detected, critical safety hazard, immediate response required."
+            )
 
     # 1c — rate threshold
     rate = state.get("cluster_rate_per_hour") or 0.0
