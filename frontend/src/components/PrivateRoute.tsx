@@ -3,7 +3,7 @@ import { Navigate } from 'react-router-dom'
 import { clearOfficerSession, isTokenExpired } from '../api/client'
 
 export default function PrivateRoute({ children }: { children: ReactNode }) {
-  const token = localStorage.getItem('jwt_token')
+  const token = localStorage.getItem('access_token')
   if (!token || isTokenExpired(token)) {
     if (token) clearOfficerSession()
     return <Navigate to="/officer/login" replace />
