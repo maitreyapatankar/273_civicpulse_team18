@@ -103,16 +103,35 @@ OFFICERS: list[dict[str, Any]] = [
 ]
 
 CREWS: list[dict[str, Any]] = [
+    # Roads (3 crews)
     {"team_name": "Roads Alpha",       "crew_type": "roads",
-     "lead_name": "Diana Reed",        "lead_email": "roads.lead@civicpulse.gov"},
-    {"team_name": "Traffic Bravo",     "crew_type": "traffic",
-     "lead_name": "Marcus Chen",       "lead_email": "traffic.lead@civicpulse.gov"},
-    {"team_name": "Drainage Charlie",  "crew_type": "drainage",
-     "lead_name": "Priya Nair",        "lead_email": "drainage.lead@civicpulse.gov"},
-    {"team_name": "Structures Delta",  "crew_type": "structures",
-     "lead_name": "Aaron Webb",        "lead_email": "structures.lead@civicpulse.gov"},
-    {"team_name": "Operations Echo",   "crew_type": "operations",
-     "lead_name": "Sara Okafor",       "lead_email": "ops.lead@civicpulse.gov"},
+     "lead_name": "Manasa Sadhu",      "lead_email": "manasasadhu1010@gmail.com"},
+    {"team_name": "Roads Beta",        "crew_type": "roads",
+     "lead_name": "Manasa Sadhu",      "lead_email": "manasa.sadhu@sjsu.edu"},
+    {"team_name": "Roads Gamma",       "crew_type": "roads",
+     "lead_name": "Aishwarya Hiremath", "lead_email": "aishwarya.hiremath@sjsu.edu"},
+
+    # Traffic (2 crews)
+    {"team_name": "Traffic Alpha",     "crew_type": "traffic",
+     "lead_name": "Mokshit Chopra",    "lead_email": "mokshit.chopra@sjsu.edu"},
+    {"team_name": "Traffic Beta",      "crew_type": "traffic",
+     "lead_name": "Maitreya Patankar", "lead_email": "maitreya.patankar@sjsu.edu"},
+
+    # Drainage (2 crews)
+    {"team_name": "Drainage Alpha",    "crew_type": "drainage",
+     "lead_name": "Manasa Sadhu",      "lead_email": "manasasadhu1010@gmail.com"},
+    {"team_name": "Drainage Beta",     "crew_type": "drainage",
+     "lead_name": "Aishwarya Hiremath", "lead_email": "aishwarya.hiremath@sjsu.edu"},
+
+    # Structures (2 crews)
+    {"team_name": "Structures Alpha",  "crew_type": "structures",
+     "lead_name": "Mokshit Chopra",    "lead_email": "mokshit.chopra@sjsu.edu"},
+    {"team_name": "Structures Beta",   "crew_type": "structures",
+     "lead_name": "Manasa Sadhu",      "lead_email": "manasa.sadhu@sjsu.edu"},
+
+    # Operations (1 crew)
+    {"team_name": "Operations Alpha",  "crew_type": "operations",
+     "lead_name": "Maitreya Patankar", "lead_email": "maitreya.patankar@sjsu.edu"},
 ]
 
 # Reports + matching tickets are defined together so urgency, severity, and
