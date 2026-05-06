@@ -22,7 +22,18 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.memory import MemorySaver
+from celery.signals import after_setup_logger
 
+@after_setup_logger.connect
+def setup_loggers(logger, *args, **kwargs):
+    import logging
+    logging.getLogger().setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s - %(message)s"
+    ))
+    logging.getLogger().addHandler(handler)
+    
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=LOG_LEVEL,

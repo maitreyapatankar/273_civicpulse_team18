@@ -14,4 +14,5 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
     CMD python healthcheck.py
 
 CMD ["celery", "-A", "tasks", "worker", "--concurrency=1", \
-    "-Q", "reports:process,ai_core:results,ai_core:failed"]
+    "-Q", "reports:process,ai_core:results,ai_core:failed", \
+    "--pool=solo", "--loglevel=INFO", "-E"]
