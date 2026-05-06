@@ -1,9 +1,29 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import api from '../api/client'
 import { Ticket, TicketDetailResponse, TicketOverride } from '../api/types'
 import AppNav from '../components/AppNav'
+
+function isTokenExpired(): boolean {
+  const token = localStorage.getItem('access_token')
+  if (!token) return true
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return true
+    const payload = JSON.parse(atob(parts[1]))
+    return payload.exp * 1000 < Date.now()
+  } catch {
+    return true
+  }
+}
+
+function clearOfficerSession() {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('officer_id')
+  localStorage.removeItem('officer_name')
+  localStorage.removeItem('officer_role')
+}
 
 function formatDate(iso?: string | null): string {
   if (!iso) return '—'
@@ -352,11 +372,24 @@ function TicketCard({ ticket, crews }: {
 }
 
 export default function StaffDashboard() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<'open' | 'review'>('open')
   const [search, setSearch] = useState('')
 
-  const { data: openTickets = [], isLoading, isError } = useQuery<Ticket[]>({
+  useEffect(() => {
+    if (isTokenExpired()) {
+      clearOfficerSession()
+      navigate('/officer/login')
+    }
+  }, [navigate])
+
+  const handleLogout = () => {
+    clearOfficerSession()
+    navigate('/officer/login')
+  }
+
+  const { data: openTickets = [], isLoading, isError, refetch } = useQuery<Ticket[]>({
     queryKey: ['staff-tickets'],
     queryFn: () => api.get('/tickets?status=open').then((r) => r.data),
     refetchInterval: 60_000,
@@ -405,6 +438,12 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
             >
               View Schedule →
             </Link>
+            <button
+              onClick={handleLogout}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Logout
+            </button>
           </div>
         </header>
 
@@ -442,7 +481,15 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
             <div className="glass-card rounded-2xl p-6 text-sm text-slate-500 animate-pulse">Loading tickets…</div>
           )}
           {isError && (
-            <div className="glass-card rounded-2xl p-6 text-sm text-rose-600">Unable to load tickets.</div>
+            <div className="glass-card rounded-2xl p-6 flex items-center justify-between">
+              <span className="text-sm text-rose-600">Unable to load tickets.</span>
+              <button
+                onClick={() => refetch()}
+                className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700 transition"
+              >
+                Retry
+              </button>
+            </div>
           )}
           {!loading && !isError && visible.length === 0 && (
             <div className="glass-card rounded-2xl p-6 text-sm text-slate-500">No tickets found.</div>
