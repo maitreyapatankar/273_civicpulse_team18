@@ -1,0 +1,6 @@
+celery[redis]==5.3.6
+redis==5.0.4
+sqlalchemy==2.0.29
+psycopg2-binary==2.9.9
+twilio==8.5.0
+python-dotenv>=1.0.0
