@@ -195,7 +195,7 @@ def build_schedule() -> None:
                 ticket_ids_in_zone = [str(t.id) for t in tickets_in_zone]
                 db.execute(text("""
                     UPDATE tickets
-                    SET crew_id = :crew_id, assigned_to = :team_name, assigned_at = now(), lifecycle_status = 'forwarded_to_maintenance'
+                    SET crew_id = :crew_id, assigned_to = :team_name, assigned_at = now()
                     WHERE id = ANY(cast(:ids as uuid[]))
                       AND crew_id IS NULL
                 """), {

@@ -60,9 +60,6 @@ function TicketCard({ ticket, crews }: {
   const [isPublic, setIsPublic] = useState(true)
   const [selectedCrewId, setSelectedCrewId] = useState('')
   const [savedMsg, setSavedMsg] = useState('')
-  const [showApprovalModal, setShowApprovalModal] = useState(false)
-  const [suggestedCrewId, setSuggestedCrewId] = useState<string | null>(null)
-  const [approvalCrewId, setApprovalCrewId] = useState('')
 
   function flash(msg: string) {
     setSavedMsg(msg)
@@ -86,18 +83,9 @@ function TicketCard({ ticket, crews }: {
     onSuccess: () => { flash('Override saved'); invalidate() },
   })
 
-  const suggestCrewMutation = useMutation({
-    mutationFn: () => api.get(`/tickets/${ticket.id}/suggest-crew`).then((r: any) => r.data),
-    onSuccess: (data: any) => {
-      setSuggestedCrewId(data.suggested_crew_id)
-      setApprovalCrewId(data.suggested_crew_id)
-      setShowApprovalModal(true)
-    },
-  })
-
   const approveMutation = useMutation({
-    mutationFn: () => api.patch(`/tickets/${ticket.id}`, { approve: true, crew_id: approvalCrewId } as TicketOverride).then((r: any) => r.data),
-    onSuccess: () => { flash('Approved'); invalidate(); setShowApprovalModal(false) },
+    mutationFn: () => api.patch(`/tickets/${ticket.id}`, { approve: true } as TicketOverride).then((r: any) => r.data),
+    onSuccess: () => { flash('Approved - scheduler will assign crew'); invalidate() },
   })
 
   const rejectMutation = useMutation({
@@ -156,11 +144,11 @@ function TicketCard({ ticket, crews }: {
           {!ticket.approved && ticket.lifecycle_status !== 'forwarded_to_maintenance' && (
             <>
               <button
-                onClick={() => suggestCrewMutation.mutate()}
-                disabled={suggestCrewMutation.isPending}
+                onClick={() => approveMutation.mutate()}
+                disabled={approveMutation.isPending}
                 className="rounded-2xl bg-emerald-600 text-white px-4 py-2 text-sm font-semibold hover:bg-emerald-700 disabled:opacity-60 transition"
               >
-                {suggestCrewMutation.isPending ? 'Loading crews…' : 'Approve'}
+                {approveMutation.isPending ? 'Approving…' : 'Approve'}
               </button>
               <button
                 onClick={() => rejectMutation.mutate()}
@@ -180,12 +168,14 @@ function TicketCard({ ticket, crews }: {
               {resolveMutation.isPending ? 'Resolving…' : 'Mark Resolved'}
             </button>
           )}
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="rounded-2xl border border-slate-200 text-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-50 transition"
-          >
-            {expanded ? 'Hide details' : 'View details & actions'}
-          </button>
+          {!ticket.resolved_at && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="rounded-2xl border border-slate-200 text-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-50 transition"
+            >
+              {expanded ? 'Hide details' : 'View details & actions'}
+            </button>
+          )}
           {savedMsg && (
             <span className="text-emerald-600 text-sm font-medium">{savedMsg}</span>
           )}
@@ -196,6 +186,29 @@ function TicketCard({ ticket, crews }: {
       {expanded && (
         <div className="border-t border-slate-200 px-6 pb-6 pt-5 space-y-5 bg-white/70">
 
+          {/* Metadata (Category, Severity, Confidence) */}
+          {detailQuery.data && (
+            <div className="flex flex-wrap gap-3 text-xs">
+              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
+                <p className="text-slate-400 uppercase tracking-[0.1em]">Category</p>
+                <p className="font-medium text-slate-900">{detailQuery.data.category_name || '—'}</p>
+                {detailQuery.data.subcategory_name && (
+                  <p className="text-slate-500">{detailQuery.data.subcategory_name}</p>
+                )}
+              </div>
+              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
+                <p className="text-slate-400 uppercase tracking-[0.1em]">Severity</p>
+                <p className="font-medium text-slate-900">{detailQuery.data.severity ?? '—'} / 5</p>
+              </div>
+              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
+                <p className="text-slate-400 uppercase tracking-[0.1em]">AI Confidence</p>
+                <p className="font-medium text-slate-900">
+                  {detailQuery.data.confidence != null ? `${Math.round(detailQuery.data.confidence * 100)}%` : '—'}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* AI reasoning */}
           {ticket.ai_reasoning && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -204,25 +217,38 @@ function TicketCard({ ticket, crews }: {
             </div>
           )}
 
-          {/* Officer approval */}
-          {!ticket.approved && ticket.lifecycle_status !== 'forwarded_to_maintenance' && (
-            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 space-y-3">
-              <div>
-                <p className="text-xs font-semibold text-blue-700 uppercase tracking-[0.2em]">Officer approval</p>
-                <p className="text-xs text-slate-600 mt-1">Approve to move this ticket to pending and enable crew scheduling.</p>
-              </div>
-              <button
-                onClick={() => suggestCrewMutation.mutate()}
-                disabled={suggestCrewMutation.isPending}
-                className="w-full rounded-xl bg-blue-600 text-white text-sm font-semibold py-2.5 hover:bg-blue-700 disabled:opacity-60 transition"
-              >
-                {suggestCrewMutation.isPending ? 'Loading crews…' : 'Approve & Select Crew'}
-              </button>
+          {/* Customer report */}
+          {(detailQuery.isLoading) && (
+            <p className="text-sm text-slate-400 animate-pulse">Loading report…</p>
+          )}
+          {detailQuery.data && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Customer report</p>
+              {detailQuery.data.text && (
+                <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{detailQuery.data.text}</p>
+              )}
+              {!detailQuery.data.text && (
+                <p className="text-xs text-slate-400">No text submitted.</p>
+              )}
+              {detailQuery.data.image_url && (
+                <div className="rounded-xl overflow-hidden border border-slate-200">
+                  <img src={detailQuery.data.image_url} alt="Submitted photo" className="w-full max-h-60 object-cover" />
+                </div>
+              )}
+              {detailQuery.data.image_text_conflict && (
+                <div className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">
+                  <span className="font-semibold">Image/text conflict —</span>{' '}
+                  {detailQuery.data.image_classification_hint
+                    ? `image suggests: ${detailQuery.data.image_classification_hint}`
+                    : 'AI trusted the image over the text.'}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Crew reassignment */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+          {/* Crew reassignment (only for approved/pending tickets) */}
+          {ticket.approved && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
             <div>
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Crew assignment</p>
               {ticket.assigned_to && (
@@ -246,11 +272,13 @@ function TicketCard({ ticket, crews }: {
             >
               {assignMutation.isPending ? 'Assigning…' : ticket.assigned_to ? 'Reassign crew' : 'Assign crew'}
             </button>
-          </div>
+            </div>
+          )}
 
-          {/* Override priority (simplified) */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Override priority</p>
+          {/* Override priority (not for pending tickets) */}
+          {ticket.lifecycle_status !== 'forwarded_to_maintenance' && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Override priority</p>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-slate-400 mb-1.5 block">Issue type</label>
@@ -305,34 +333,6 @@ function TicketCard({ ticket, crews }: {
             >
               {overrideMutation.isPending ? 'Saving…' : 'Apply'}
             </button>
-          </div>
-
-          {/* Customer report */}
-          {(detailQuery.isLoading) && (
-            <p className="text-sm text-slate-400 animate-pulse">Loading report…</p>
-          )}
-          {detailQuery.data && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">Customer report</p>
-              {detailQuery.data.text && (
-                <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{detailQuery.data.text}</p>
-              )}
-              {!detailQuery.data.text && (
-                <p className="text-xs text-slate-400">No text submitted.</p>
-              )}
-              {detailQuery.data.image_url && (
-                <div className="rounded-xl overflow-hidden border border-slate-200">
-                  <img src={detailQuery.data.image_url} alt="Submitted photo" className="w-full max-h-60 object-cover" />
-                </div>
-              )}
-              {detailQuery.data.image_text_conflict && (
-                <div className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">
-                  <span className="font-semibold">Image/text conflict —</span>{' '}
-                  {detailQuery.data.image_classification_hint
-                    ? `image suggests: ${detailQuery.data.image_classification_hint}`
-                    : 'AI trusted the image over the text.'}
-                </div>
-              )}
             </div>
           )}
 
@@ -367,92 +367,9 @@ function TicketCard({ ticket, crews }: {
             </div>
           )}
 
-          {/* Resolution */}
-          {ticket.lifecycle_status === 'forwarded_to_maintenance' && !ticket.resolved_at && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 space-y-3">
-              <div>
-                <p className="text-xs font-semibold text-emerald-700 uppercase tracking-[0.2em]">Resolution</p>
-                <p className="text-xs text-slate-600 mt-1">Mark as done when crew confirms work is complete.</p>
-              </div>
-              <button
-                onClick={() => resolveMutation.mutate()}
-                disabled={resolveMutation.isPending}
-                className="w-full rounded-xl bg-emerald-600 text-white text-sm font-semibold py-2.5 hover:bg-emerald-700 disabled:opacity-60 transition"
-              >
-                {resolveMutation.isPending ? 'Resolving…' : 'Mark Resolved'}
-              </button>
-            </div>
-          )}
-
-          {/* Metadata footer */}
-          {detailQuery.data && (
-            <div className="flex flex-wrap gap-3 text-xs">
-              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
-                <p className="text-slate-400 uppercase tracking-[0.1em]">Category</p>
-                <p className="font-medium text-slate-900">{detailQuery.data.category_name || '—'}</p>
-                {detailQuery.data.subcategory_name && (
-                  <p className="text-slate-500">{detailQuery.data.subcategory_name}</p>
-                )}
-              </div>
-              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
-                <p className="text-slate-400 uppercase tracking-[0.1em]">Severity</p>
-                <p className="font-medium text-slate-900">{detailQuery.data.severity ?? '—'} / 5</p>
-              </div>
-              <div className="flex-1 min-w-max rounded-xl bg-slate-100 px-3 py-2">
-                <p className="text-slate-400 uppercase tracking-[0.1em]">AI Confidence</p>
-                <p className="font-medium text-slate-900">
-                  {detailQuery.data.confidence != null ? `${Math.round(detailQuery.data.confidence * 100)}%` : '—'}
-                </p>
-              </div>
-            </div>
-          )}
-
         </div>
       )}
 
-      {/* Approval Modal */}
-      {showApprovalModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-slate-900">Approve & Assign Crew</h2>
-            <p className="text-sm text-slate-600">Select which crew should handle this ticket.</p>
-
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-[0.15em]">
-                Suggested crew
-              </label>
-              <select
-                value={approvalCrewId}
-                onChange={(e) => setApprovalCrewId(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 bg-white"
-              >
-                {crews.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.team_name} ({c.crew_type}) · {c.lead_name}
-                    {c.id === suggestedCrewId ? ' — recommended' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex gap-3 pt-3">
-              <button
-                onClick={() => setShowApprovalModal(false)}
-                className="flex-1 rounded-xl border border-slate-200 text-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-50 transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => approveMutation.mutate()}
-                disabled={approveMutation.isPending || !approvalCrewId}
-                className="flex-1 rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-semibold hover:bg-emerald-700 disabled:opacity-60 transition"
-              >
-                {approveMutation.isPending ? 'Approving…' : 'Approve & Assign'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -507,12 +424,6 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
             >
               All Tickets
             </Link>
-            <button
-              onClick={() => setTab('pending')}
-              className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 transition-colors"
-            >
-              Pending Tickets
-            </button>
             <Link
               to="/officer/schedule"
               className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
@@ -534,6 +445,7 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
             {([
               { key: 'open',    label: `Open (${open.length})` },
               { key: 'review',  label: `Needs review (${review.length})` },
+              { key: 'pending', label: `Pending (${pending.length})` },
               { key: 'resolved', label: `Resolved (${resolved.length})` },
             ] as const).map((item) => (
               <button

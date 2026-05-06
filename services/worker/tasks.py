@@ -32,30 +32,12 @@ Retry countdown (2^attempt seconds)
 import json
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Optional
 
 import redis
 from celery import Celery
-from sqlalchemy import func
 
 from shared.db import get_db
-from shared.models import Crew, RawReport, Ticket
-
-# ── Category-code prefix → department ────────────────────────────────────────
-# Matches taxonomy.json categories to the five officer departments.
-
-_CATEGORY_DEPT: dict[str, str] = {
-    "RD": "roads",       # Road Surface
-    "SG": "roads",       # Signage
-    "MK": "roads",       # Road Markings
-    "SW": "roads",       # Sidewalk / Footpath
-    "TF": "traffic",     # Traffic Signal
-    "SL": "traffic",     # Street Lighting
-    "DR": "drainage",    # Drainage
-    "ST": "structures",  # Structures & Bridges
-    "OT": "operations",  # Other / catch-all
-}
+from shared.models import RawReport, Ticket
 
 REDIS_URL = os.environ["REDIS_URL"]
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -76,45 +58,6 @@ celery_app.conf.task_reject_on_worker_lost = True
 # blocking the task indefinitely. _publish_event already swallows the exception.
 _redis = redis.Redis.from_url(REDIS_URL, socket_timeout=2, socket_connect_timeout=2)
 log = logging.getLogger(__name__)
-
-
-def _auto_assign(db, ticket: Ticket, category_code: Optional[str]) -> None:
-    """Assign the ticket to the crew lead in the matching crew_type with the
-    fewest currently open (unresolved) tickets. Silently no-ops when no crews
-    are available for that crew_type.
-    """
-    crew_type = _CATEGORY_DEPT.get((category_code or "")[:2], "operations")
-
-    candidates = (
-        db.query(Crew)
-          .filter(Crew.crew_type == crew_type)
-          .all()
-    )
-
-    if not candidates:
-        log.warning("auto_assign no crews found crew_type=%s ticket_id=%s", crew_type, ticket.id)
-        return
-
-    # Count open tickets per crew, keyed by crew ID
-    open_counts: dict[str, int] = {
-        str(c.id): (
-            db.query(func.count(Ticket.id))
-              .filter(Ticket.assigned_to == c.team_name)
-              .filter(Ticket.resolved_at.is_(None))
-              .scalar() or 0
-        )
-        for c in candidates
-    }
-
-    chosen = min(candidates, key=lambda c: open_counts.get(str(c.id), 0))
-    ticket.assigned_to = chosen.team_name
-    ticket.crew_id = chosen.id
-    ticket.assigned_at = datetime.now(timezone.utc)
-    ticket.lifecycle_status = 'forwarded_to_maintenance'
-    log.info(
-        "auto_assign ticket_id=%s crew_type=%s crew=%s open_tickets=%s",
-        ticket.id, crew_type, chosen.team_name, open_counts.get(str(chosen.id), 0),
-    )
 
 
 def _publish_event(channel: str, ticket_id: str, report_id: str | None) -> None:
@@ -217,9 +160,8 @@ def handle_ai_result(report_id: str, enriched: dict):
             existing.duplicate_of              = master_id
             enriched_cluster                   = enriched.get("cluster_count") or 1
             existing.cluster_count             = max(existing.cluster_count or 1, enriched_cluster)
-            # Auto-assign to crew if not yet assigned
-            if not existing.crew_id:
-                _auto_assign(db, existing, enriched.get("category_code"))
+            # Crew assignment is now handled exclusively by the Scheduler service
+            # (triggered after officer approval, not on AI pipeline completion)
             ticket_id = str(existing.id)
         else:
             ticket = Ticket(
