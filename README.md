@@ -137,7 +137,24 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 
 > Deduplication uses a direct Postgres query (subcategory code + 100 m geo bbox) — no vector DB or embedding API required.
 
-### Service 5 — Notifications
+### Service 4 — Scheduler
+
+Automatically assigns crews to approved tickets on a recurring schedule (every 15 seconds for demo purposes).
+
+| Variable | What it's used for |
+|----------|--------------------|
+| `SCHEDULER_INTERVAL` | How often to run crew assignments in seconds (default: `900` = 15 minutes). For demos, set to `15`. |
+| `LOG_LEVEL` | Controls verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+
+**How it works:**
+- Runs `scheduler.py` which continuously queries for approved tickets without crew assignments
+- Uses the same load-balancing logic as the worker: assigns to the crew with the fewest open tickets
+- Updates ticket status to `forwarded_to_maintenance` when a crew is assigned
+- Sends email notification to crew lead (if email is configured)
+
+### Service 5 — Notifications & Email
+
+**SMS via Twilio:**
 
 | Variable | What it's used for |
 |----------|--------------------|
@@ -145,7 +162,21 @@ The internal connection strings (Postgres, Redis, API base URL) are already pre-
 | `TWILIO_AUTH_TOKEN` | Auth token paired with the account SID. |
 | `TWILIO_FROM_NUMBER` | Your Twilio phone number SMS messages are sent from (e.g. `+12025551234`). |
 
-> **Skipping SMS?** Leave all three Twilio variables blank — every other service still runs. S5 Notifications will crash on startup without them, but that doesn't affect S1/S2/S3/S4.
+**Email notifications (crew lead assignment alerts):**
+
+| Variable | What it's used for |
+|----------|--------------------|
+| `EMAIL_ADDRESS` | Gmail address that sends crew lead notifications (e.g. `noreply@civicpulse.gov`). |
+| `EMAIL_APP_PASSWORD` | Gmail App Password (not your regular password). Generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). Requires 2FA enabled. |
+
+When a crew is assigned to a ticket (either via scheduler or manual dispatcher action), the crew lead receives an email with:
+- Assigned issue type and priority
+- Location address
+- Link to the staff dashboard schedule
+
+> **Skipping SMS?** Leave all three Twilio variables blank — every other service still runs. S5 Notifications will crash on startup without them, but that doesn't affect other services.
+> 
+> **Skipping email?** Leave `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` blank — crew assignment still works, but leads won't get email notifications.
 
 ---
 

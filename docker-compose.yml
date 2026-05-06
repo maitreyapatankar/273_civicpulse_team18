@@ -28,6 +28,7 @@ services:
       start_period: 5s
 
   api:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: services/api/Dockerfile
@@ -40,6 +41,7 @@ services:
     env_file: .env
 
   ai_core:
+    platform: linux/amd64
     build: ./services/ai_core
     command: celery -A consumer worker --concurrency=4 -Q ai_core:process
     depends_on:
@@ -51,6 +53,7 @@ services:
     # No ports — pure queue consumer, no HTTP server
 
   worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: services/worker/Dockerfile
@@ -66,6 +69,7 @@ services:
     # No ports — pure queue consumer
 
   notifications:
+    platform: linux/amd64
     build: ./services/notifications
     depends_on:
       redis:
@@ -80,6 +84,7 @@ services:
       VITE_API_BASE_URL: http://localhost:8000
 
   scheduler:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: services/scheduler/Dockerfile
