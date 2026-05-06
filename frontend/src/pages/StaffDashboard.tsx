@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import api from '../api/client'
 import { Ticket, TicketDetailResponse, TicketOverride } from '../api/types'
 import AppNav from '../components/AppNav'
@@ -372,21 +372,13 @@ function TicketCard({ ticket, crews }: {
 }
 
 export default function StaffDashboard() {
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<'open' | 'review'>('open')
   const [search, setSearch] = useState('')
 
-  useEffect(() => {
-    if (isTokenExpired()) {
-      clearOfficerSession()
-      navigate('/officer/login')
-    }
-  }, [navigate])
-
   const handleLogout = () => {
     clearOfficerSession()
-    navigate('/officer/login')
+    window.location.href = '/officer/login'
   }
 
   const { data: openTickets = [], isLoading, isError, refetch } = useQuery<Ticket[]>({
