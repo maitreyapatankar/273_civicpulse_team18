@@ -15,9 +15,8 @@ router = APIRouter(tags=["tickets"])
 def derive_status(raw_status: Optional[str], ticket: Optional[Ticket]) -> str:
     """Compute the citizen-facing lifecycle status from raw_report + ticket fields.
 
-    Order of checks matters: failed beats everything; resolved beats in_progress;
-    forwarded_to_maintenance requires BOTH approved=true AND crew assigned;
-    pre-AI states (queued/processing) win when no ticket has been created yet.
+    Flow: open (awaiting approval) → pending (approved, waiting for crew) →
+    forwarded_to_maintenance (crew assigned) → resolved.
     """
     if raw_status == "failed":
         return "failed"
@@ -25,11 +24,13 @@ def derive_status(raw_status: Optional[str], ticket: Optional[Ticket]) -> str:
         return raw_status or "queued"
     if ticket and ticket.resolved_at:
         return "resolved"
-    # Only forwarded_to_maintenance if BOTH approved AND crew assigned
+    # Crew assigned: in active maintenance
     if ticket and ticket.approved and ticket.crew_id:
         return "forwarded_to_maintenance"
+    # Approved but no crew yet: waiting in queue for scheduler
     if ticket and ticket.approved:
-        return "approved"
+        return "pending"
+    # Not yet approved
     if ticket:
         return "open"
     return raw_status or "queued"

@@ -16,9 +16,8 @@ function urgencyBadge(score: number | null): { label: string; classes: string } 
 
 function lifecycleBadge(status: string | null | undefined): { label: string; classes: string } {
   switch (status) {
-    case 'approved':                return { label: 'Approved',                classes: 'bg-blue-100 text-blue-800' }
+    case 'pending':                 return { label: 'Pending',                 classes: 'bg-blue-100 text-blue-800' }
     case 'forwarded_to_maintenance': return { label: 'Forwarded to Maintenance', classes: 'bg-purple-100 text-purple-800' }
-    case 'in_progress':             return { label: 'In Progress',             classes: 'bg-indigo-100 text-indigo-800' }
     case 'resolved':                return { label: 'Resolved',                classes: 'bg-emerald-100 text-emerald-800' }
     case 'failed':                  return { label: 'Failed',                  classes: 'bg-rose-100 text-rose-700' }
     default:                        return { label: 'Open',                    classes: 'bg-amber-100 text-amber-800' }
@@ -46,8 +45,8 @@ export default function DispatcherDashboard() {
   })
 
   const tickets = allTickets.filter((t) => {
-    if (statusFilter === 'open') return !t.approved && t.lifecycle_status === 'open'
-    if (statusFilter === 'in_progress') return t.lifecycle_status === 'forwarded_to_maintenance'
+    if (statusFilter === 'open') return t.lifecycle_status === 'open'
+    if (statusFilter === 'in_progress') return t.lifecycle_status === 'pending' || t.lifecycle_status === 'forwarded_to_maintenance'
     if (statusFilter === 'resolved') return t.resolved_at !== null
     return true
   })
@@ -109,10 +108,10 @@ export default function DispatcherDashboard() {
         {/* Stats row */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           {[
-            { label: 'Total',    value: tickets.length },
-            { label: 'Open',     value: tickets.filter((t) => !t.resolved_at).length },
-            { label: 'Approved', value: tickets.filter((t) => t.approved && !t.resolved_at).length },
-            { label: 'Resolved', value: tickets.filter((t) => t.resolved_at).length },
+            { label: 'Total',    value: allTickets.length },
+            { label: 'Open',     value: allTickets.filter((t) => t.lifecycle_status === 'open').length },
+            { label: 'Pending',  value: allTickets.filter((t) => (t.lifecycle_status === 'pending' || t.lifecycle_status === 'forwarded_to_maintenance') && !t.resolved_at).length },
+            { label: 'Resolved', value: allTickets.filter((t) => t.resolved_at).length },
           ].map((s) => (
             <div key={s.label} className="glass-card rounded-2xl p-4 shadow">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{s.label}</p>

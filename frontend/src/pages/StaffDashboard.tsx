@@ -37,9 +37,8 @@ function urgencyLabel(score: number | null): { label: string; classes: string } 
 
 function lifecycleBadge(status: string | null | undefined): { label: string; classes: string } {
   switch (status) {
-    case 'approved':                return { label: 'Approved',                classes: 'bg-blue-100 text-blue-800' }
+    case 'pending':                 return { label: 'Pending',                 classes: 'bg-blue-100 text-blue-800' }
     case 'forwarded_to_maintenance': return { label: 'Forwarded to Maintenance', classes: 'bg-purple-100 text-purple-800' }
-    case 'in_progress':             return { label: 'In Progress',             classes: 'bg-indigo-100 text-indigo-800' }
     case 'resolved':                return { label: 'Resolved',                classes: 'bg-emerald-100 text-emerald-800' }
     case 'failed':                  return { label: 'Failed',                  classes: 'bg-rose-100 text-rose-700' }
     default:                        return { label: 'Open',                    classes: 'bg-amber-100 text-amber-800' }
@@ -382,7 +381,7 @@ export default function StaffDashboard() {
   const { data: openTickets = [], isLoading, isError, refetch } = useQuery<Ticket[]>({
     queryKey: ['staff-tickets'],
     queryFn: () => api.get('/tickets?status=all').then((r) => r.data),
-    refetchInterval: 60_000,
+    refetchInterval: 20_000,
   })
 
 const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type: string; lead_name: string }[]>({
@@ -390,9 +389,9 @@ const { data: crews = [] } = useQuery<{ id: string; team_name: string; crew_type
     queryFn: () => api.get('/crews').then((r) => r.data),
   })
 
-  const open    = openTickets.filter((t) => !t.approved && !t.needs_review && t.lifecycle_status !== 'forwarded_to_maintenance' && !t.resolved_at)
-  const review  = openTickets.filter((t) => !t.approved && t.needs_review && t.lifecycle_status !== 'forwarded_to_maintenance' && !t.resolved_at)
-  const pending = openTickets.filter((t) => t.lifecycle_status === 'forwarded_to_maintenance' && !t.resolved_at)
+  const open    = openTickets.filter((t) => t.lifecycle_status === 'open' && !t.needs_review && !t.resolved_at)
+  const review  = openTickets.filter((t) => t.lifecycle_status === 'open' && t.needs_review && !t.resolved_at)
+  const pending = openTickets.filter((t) => (t.lifecycle_status === 'pending' || t.lifecycle_status === 'forwarded_to_maintenance') && !t.resolved_at)
   const resolved = openTickets.filter((t) => t.resolved_at !== null)
   const baseList = tab === 'open' ? open : tab === 'review' ? review : tab === 'pending' ? pending : resolved
 

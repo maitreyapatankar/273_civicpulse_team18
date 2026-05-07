@@ -75,7 +75,7 @@ export interface Ticket {
   assigned_at:          string | null
   assigned_to:          string | null
   resolved_at:          string | null
-  lifecycle_status:     'open' | 'approved' | 'forwarded_to_maintenance' | 'in_progress' | 'resolved' | 'failed' | null
+  lifecycle_status:     'open' | 'pending' | 'forwarded_to_maintenance' | 'resolved' | 'failed' | null
   approved:             boolean
   lat:                  number | null
   lng:                  number | null
