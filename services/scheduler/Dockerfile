@@ -10,4 +10,4 @@ COPY services/scheduler/ ./
 
 ENV PYTHONPATH=/app
 
-CMD ["celery", "-A", "scheduler", "worker", "--beat", "--concurrency=1"]
+CMD ["python", "scheduler.py"]
