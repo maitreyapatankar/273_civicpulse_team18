@@ -157,7 +157,8 @@ async def override_ticket(
             ticket.approved = True
 
         if override.reject is True:
-            ticket.lifecycle_status = 'failed'
+            # Rejection is handled by marking the raw_report as failed, not by setting a stored status
+            pass
 
         if override.urgency_score is not None:
             ticket.urgency_score = override.urgency_score
@@ -190,10 +191,6 @@ async def override_ticket(
             ticket.assigned_to = override.assign_to or None
             ticket.assigned_at = now if override.assign_to else None
             assigned = True
-
-        # When approved and crew is assigned, move to pending state
-        if override.approve is True and ticket.crew_id is not None:
-            ticket.lifecycle_status = 'forwarded_to_maintenance'
 
         if override.resolve is True:
             ticket.resolved_at = now

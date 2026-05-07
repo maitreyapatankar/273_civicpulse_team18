@@ -1,14 +1,13 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { clearOfficerSession, isTokenExpired } from '../api/client'
 
 type Role = 'public' | 'citizen' | 'officer'
 
 interface AppNavProps {
-  activeRole?: Role
+  readonly activeRole?: Role
 }
 
 export default function AppNav({ activeRole = 'public' }: AppNavProps) {
-  const navigate = useNavigate()
   const isStaffActive = activeRole === 'officer'
   const officerToken = localStorage.getItem('access_token') || ''
   const isLoggedIn = Boolean(officerToken) && !isTokenExpired(officerToken)
@@ -21,7 +20,7 @@ export default function AppNav({ activeRole = 'public' }: AppNavProps) {
   function handleLogout() {
     clearOfficerSession()
     localStorage.removeItem('citizen_token')
-    navigate('/', { replace: true })
+    window.location.href = '/'
   }
 
   const staffTarget = isLoggedIn ? '/staff' : '/officer/login'
@@ -42,12 +41,22 @@ export default function AppNav({ activeRole = 'public' }: AppNavProps) {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <Link
-                to="/"
-                className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
-              >
-                Home
-              </Link>
+              {isStaffActive ? (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
+                >
+                  Home
+                </button>
+              ) : (
+                <Link
+                  to="/"
+                  className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
+                >
+                  Home
+                </Link>
+              )}
               <Link
                 to="/report"
                 className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
