@@ -158,7 +158,7 @@ function TicketCard({ ticket, crews }: {
               </button>
             </>
           )}
-          {ticket.lifecycle_status === 'forwarded_to_maintenance' && !ticket.resolved_at && (
+          {(ticket.lifecycle_status === 'pending' || ticket.lifecycle_status === 'forwarded_to_maintenance') && !ticket.resolved_at && (
             <button
               onClick={() => resolveMutation.mutate()}
               disabled={resolveMutation.isPending}
