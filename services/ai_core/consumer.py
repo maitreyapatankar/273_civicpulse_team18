@@ -20,20 +20,18 @@ import time
 
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
-from langchain_core.tracers.langchain import LangChainTracer
 from langgraph.checkpoint.memory import MemorySaver
 from celery.signals import after_setup_logger
 
 @after_setup_logger.connect
 def setup_loggers(logger, *args, **kwargs):
-    import logging
     logging.getLogger().setLevel(logging.INFO)
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s - %(message)s"
     ))
     logging.getLogger().addHandler(handler)
-    
+
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -47,21 +45,13 @@ from pipeline.state import initial_state
 REDIS_URL    = os.environ["REDIS_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-celery_app = Celery(
-    "ai_core",
-    broker=REDIS_URL,
-    backend=None,
-)
+celery_app = Celery("ai_core", broker=REDIS_URL, backend=None)
 celery_app.conf.task_serializer            = "json"
 celery_app.conf.accept_content             = ["json"]
 celery_app.conf.task_track_started         = True
-# Acknowledge only after the task completes so a worker crash re-queues it.
 celery_app.conf.task_acks_late             = True
 celery_app.conf.task_reject_on_worker_lost = True
 
-# ── Checkpointer + graph — built once at worker startup ───────────────────────
-# Uses ConnectionPool (B1: auto-reconnects on dropped connections).
-# Retries until Postgres is ready (B2: handles slow DB startup in Docker).
 
 def _build_graph(url: str, max_attempts: int = 10, delay: float = 3.0):
     checkpointer = MemorySaver()
@@ -74,9 +64,6 @@ _graph = _build_graph(DATABASE_URL)
 
 
 def _send_failure(report_id: str, error_msg: str, attempt: int) -> None:
-    """Route a failed pipeline run to S3 for retry/DLQ.
-    Nested try/except so a simultaneous Redis outage is logged, not silently swallowed (#9).
-    """
     try:
         celery_app.send_task(
             "worker.tasks.handle_ai_failure",
@@ -91,32 +78,17 @@ def _send_failure(report_id: str, error_msg: str, attempt: int) -> None:
         )
 
 
-def _langsmith_tracer() -> LangChainTracer | None:
-    enabled = os.environ.get("LANGCHAIN_TRACING_V2", "").lower() in {"1", "true", "yes"}
-    if not enabled:
-        return None
-    project = os.environ.get("LANGCHAIN_PROJECT") or "civicpulse-ai-core"
-    return LangChainTracer(project_name=project)
-
-
 @celery_app.task(
     bind=True,
     name="ai_core.consumer.run_pipeline",
     queue="ai_core:process",
     max_retries=0,
-    soft_time_limit=180,   # raises SoftTimeLimitExceeded → caught below → ai_core:failed
-    time_limit=240,        # hard kill if the soft handler itself hangs
+    soft_time_limit=180,
+    time_limit=240,
 )
 def run_pipeline(self, report_id: str, payload: dict) -> None:
-    """Consume one report from ai_core:process, run the LangGraph pipeline.
-
-    thread_id = report_id so LangGraph resumes from last checkpoint on retry.
-    On success → ai_core:results. On failure → ai_core:failed. Never re-raises.
-    """
     config = {"configurable": {"thread_id": report_id}}
-    tracer = _langsmith_tracer()
-    if tracer:
-        config["callbacks"] = [tracer]
+    # LangSmith auto-instruments via LANGCHAIN_TRACING_V2 env var
 
     try:
         log.info(
