@@ -177,7 +177,7 @@ def classify_node(state: PipelineState) -> PipelineState:
         raw_severity  = raw.get("severity")
         raw_conflict  = raw.get("image_text_conflict", False)
 
-        validated_code, fallback_used = _validate_code(raw_subcode)
+        validated_code, _ = _validate_code(raw_subcode)
 
         # B4: validate category_code against taxonomy; fall back to the prefix
         # derived from the validated subcategory code so auto-assign still works.
@@ -198,7 +198,6 @@ def classify_node(state: PipelineState) -> PipelineState:
         needs_review = (
             float(raw_conf) < 0.70
             or bool(raw_conflict)
-            or fallback_used
         )
 
         log.info(
