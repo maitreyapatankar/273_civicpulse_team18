@@ -11,6 +11,8 @@ interface ScheduleTicket {
   address: string | null
   assigned_to: string | null
   crew_id?: string | null
+  lifecycle_status: string | null
+  resolved_at: string | null
 }
 
 const URGENCY_COLORS: Record<number, string> = {
@@ -33,8 +35,8 @@ export default function SchedulePage() {
     refetchInterval: 20_000,
   })
 
-  // Filter only assigned tickets and group by crew
-  const assignedTickets = allTickets.filter((t) => t.crew_id && t.assigned_to)
+  // Filter pending and assigned tickets, group by crew
+  const assignedTickets = allTickets.filter((t) => (t.lifecycle_status === 'pending' || t.lifecycle_status === 'forwarded_to_maintenance') && !t.resolved_at)
 
   const grouped = assignedTickets.reduce<Record<string, ScheduleTicket[]>>((acc, ticket) => {
     const crew = ticket.assigned_to || 'Unassigned'
