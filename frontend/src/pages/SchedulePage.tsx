@@ -1,102 +1,60 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
-import L from 'leaflet'
 import { Link } from 'react-router-dom'
 import api from '../api/client'
 import AppNav from '../components/AppNav'
 
-const markerIcon = L.icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41],
-})
-
-interface Zone {
-  id: string
-  date: string
-  zone_lat: number
-  zone_lng: number
-  crew_type: string
-  ticket_ids: string[]
-  est_hours: number
-  created_at: string
-}
-
-interface ZoneTicket {
+interface ScheduleTicket {
   id: string
   subcategory_name: string | null
   issue_type: string | null
-  urgency_score: number
+  urgency_score: number | null
   address: string | null
   assigned_to: string | null
+  crew_id?: string | null
 }
 
-const CREW_COLORS: Record<string, string> = {
-  roads:      'bg-blue-100 text-blue-800',
-  traffic:    'bg-amber-100 text-amber-800',
-  drainage:   'bg-cyan-100 text-cyan-800',
-  structures: 'bg-purple-100 text-purple-800',
-  operations: 'bg-slate-100 text-slate-700',
+const URGENCY_COLORS: Record<number, string> = {
+  5: 'bg-red-600 text-white',
+  4: 'bg-orange-500 text-white',
+  3: 'bg-yellow-400 text-slate-900',
+  2: 'bg-cyan-500 text-white',
+  1: 'bg-slate-400 text-white',
 }
 
-function urgencyColor(score: number): string {
-  if (score >= 4.5) return 'text-red-600 font-bold'
-  if (score >= 3.5) return 'text-orange-500 font-semibold'
-  if (score >= 2.5) return 'text-yellow-600'
-  return 'text-slate-500'
-}
-
-function FitBounds({ zones }: { zones: Zone[] }) {
-  const map = useMap()
-  if (zones.length > 0) {
-    const bounds = L.latLngBounds(zones.map((z) => [z.zone_lat, z.zone_lng]))
-    map.fitBounds(bounds, { padding: [40, 40] })
-  }
-  return null
+function urgencyColor(score: number | null): string {
+  if (!score) return 'bg-slate-300 text-slate-700'
+  return URGENCY_COLORS[Math.round(score)] || 'bg-slate-300 text-slate-700'
 }
 
 export default function SchedulePage() {
-  const [selected, setSelected] = useState<Zone | null>(null)
-
-  const { data: zones = [], isLoading, isError } = useQuery<Zone[]>({
-    queryKey: ['schedule-today'],
-    queryFn: () => api.get('/schedule/today').then((r) => r.data),
-    refetchInterval: 5 * 60_000,
-  })
-
-  const { data: allTickets = [] } = useQuery<ZoneTicket[]>({
+  const { data: allTickets = [], isLoading, isError } = useQuery<ScheduleTicket[]>({
     queryKey: ['schedule-tickets'],
-    queryFn: () => api.get('/tickets?status=open').then((r) => r.data),
+    queryFn: () => api.get('/tickets?status=all').then((r) => r.data),
+    refetchInterval: 20_000,
   })
 
-  const ticketMap = new Map(allTickets.map((t) => [t.id, t]))
+  // Filter only assigned tickets and group by crew
+  const assignedTickets = allTickets.filter((t) => t.crew_id && t.assigned_to)
 
-  const grouped = zones.reduce<Record<string, Zone[]>>((acc, z) => {
-    acc[z.crew_type] = [...(acc[z.crew_type] || []), z]
+  const grouped = assignedTickets.reduce<Record<string, ScheduleTicket[]>>((acc, ticket) => {
+    const crew = ticket.assigned_to || 'Unassigned'
+    acc[crew] = [...(acc[crew] || []), ticket]
     return acc
   }, {})
 
-  const totalTickets = zones.reduce((sum, z) => sum + z.ticket_ids.length, 0)
-  const totalHours = zones.reduce((sum, z) => sum + (z.est_hours || 0), 0)
-
-  const defaultCenter: [number, number] = zones.length > 0
-    ? [zones[0].zone_lat, zones[0].zone_lng]
-    : [37.35, -121.93]
+  const totalTickets = assignedTickets.length
+  const totalCrews = Object.keys(grouped).length
+  const totalHours = assignedTickets.reduce((sum, t) => sum + (t.urgency_score ? Math.ceil(t.urgency_score * 2) : 0), 0)
 
   return (
     <div className="min-h-screen bg-slate-50">
       <AppNav activeRole="officer" />
 
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="max-w-6xl mx-auto px-4 py-6">
         {/* Header */}
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Today's Schedule</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Today's Assignments</h1>
             <p className="text-sm text-slate-500 mt-0.5">
               {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
             </p>
@@ -109,154 +67,81 @@ export default function SchedulePage() {
               ← Manage Tickets
             </Link>
             <div className="flex gap-6 text-center">
-            <div>
-              <p className="text-2xl font-bold text-slate-900">{zones.length}</p>
-              <p className="text-xs text-slate-500">Zones</p>
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-slate-900">{totalTickets}</p>
-              <p className="text-xs text-slate-500">Tickets</p>
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-slate-900">{totalHours.toFixed(1)}h</p>
-              <p className="text-xs text-slate-500">Est. Hours</p>
-            </div>
+              <div>
+                <p className="text-2xl font-bold text-slate-900">{totalCrews}</p>
+                <p className="text-xs text-slate-500">Crews</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-slate-900">{totalTickets}</p>
+                <p className="text-xs text-slate-500">Tickets</p>
+              </div>
             </div>
           </div>
         </div>
 
-        {isLoading && <p className="text-slate-500 text-sm">Loading schedule…</p>}
-        {isError && <p className="text-rose-500 text-sm">Failed to load schedule.</p>}
-        {!isLoading && !isError && zones.length === 0 && (
+        {isLoading && <p className="text-slate-500 text-sm">Loading assignments…</p>}
+        {isError && <p className="text-rose-500 text-sm">Failed to load assignments.</p>}
+        {!isLoading && !isError && totalTickets === 0 && (
           <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
-            <p className="text-slate-500">No schedule built yet for today.</p>
-            <p className="text-slate-400 text-sm mt-1">The scheduler runs every 30 minutes automatically.</p>
+            <p className="text-slate-500">No tickets assigned yet for today.</p>
+            <p className="text-slate-400 text-sm mt-1">Assign tickets from the Manage Tickets page.</p>
           </div>
         )}
 
-        {zones.length > 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Map */}
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden" style={{ height: 480 }}>
-              <MapContainer center={defaultCenter} zoom={12} style={{ height: '100%', width: '100%' }}>
-                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                <FitBounds zones={zones} />
-                {zones.map((zone) => (
-                  <Marker
-                    key={zone.id}
-                    position={[zone.zone_lat, zone.zone_lng]}
-                    icon={markerIcon}
-                    eventHandlers={{ click: () => setSelected(zone) }}
-                  >
-                    <Popup>
-                      <div className="text-sm">
-                        <p className="font-semibold capitalize">{zone.crew_type} crew</p>
-                        <p>{zone.ticket_ids.length} ticket(s) · {zone.est_hours?.toFixed(1)}h</p>
-                        <button
-                          className="mt-1 text-blue-600 underline text-xs"
-                          onClick={() => setSelected(zone)}
-                        >
-                          View details
-                        </button>
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
-              </MapContainer>
-            </div>
-
-            {/* Zone list / detail */}
-            <div className="space-y-4 overflow-y-auto" style={{ maxHeight: 480 }}>
-              {selected ? (
-                <div className="bg-white rounded-xl border border-slate-200 p-4">
-                  <div className="flex items-center justify-between mb-3">
+        {totalTickets > 0 && (
+          <div className="space-y-4">
+            {Object.entries(grouped).map(([crewName, tickets]) => (
+              <div key={crewName} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                {/* Crew header */}
+                <div className="bg-gradient-to-r from-slate-50 to-slate-100 px-6 py-4 border-b border-slate-200">
+                  <div className="flex items-center justify-between">
                     <div>
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${CREW_COLORS[selected.crew_type] || CREW_COLORS.operations}`}>
-                        {selected.crew_type}
-                      </span>
-                      <p className="text-xs text-slate-400 mt-1">
-                        Zone center: {selected.zone_lat}, {selected.zone_lng}
-                      </p>
+                      <h2 className="text-lg font-semibold text-slate-900">{crewName}</h2>
+                      <p className="text-sm text-slate-500 mt-1">{tickets.length} ticket(s)</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-semibold text-slate-700">{selected.ticket_ids.length} tickets</p>
-                      <p className="text-xs text-slate-400">{selected.est_hours?.toFixed(1)}h estimated</p>
+                      <p className="text-2xl font-bold text-slate-900">{tickets.length}</p>
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    {selected.ticket_ids.map((tid, i) => {
-                      const t = ticketMap.get(tid)
-                      return (
-                        <div key={tid} className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
-                          <span className="text-xs text-slate-400 w-5 pt-0.5">{i + 1}.</span>
-                          <div className="flex-1 min-w-0">
-                            {t ? (
-                              <>
-                                <div className="flex items-center gap-2">
-                                  <span className={`text-xs font-semibold ${urgencyColor(t.urgency_score)}`}>
-                                    P{Math.round(t.urgency_score)}
-                                  </span>
-                                  <span className="text-sm text-slate-800 truncate">
-                                    {t.subcategory_name || t.issue_type || 'Unknown'}
-                                  </span>
-                                </div>
-                                <p className="text-xs text-slate-400 mt-0.5 truncate">{t.address || 'No address'}</p>
-                                {t.assigned_to && (
-                                  <p className="text-xs text-slate-400">Assigned: {t.assigned_to}</p>
-                                )}
-                              </>
-                            ) : (
-                              <p className="text-xs text-slate-400 font-mono">{tid}</p>
-                            )}
-                          </div>
-                          <Link
-                            to={`/officer/dashboard`}
-                            className="text-xs text-blue-600 hover:underline whitespace-nowrap"
-                          >
-                            View →
-                          </Link>
-                        </div>
-                      )
-                    })}
-                  </div>
-                  <button
-                    className="mt-3 text-xs text-slate-400 hover:text-slate-600"
-                    onClick={() => setSelected(null)}
-                  >
-                    ← Back to all zones
-                  </button>
                 </div>
-              ) : (
-                Object.entries(grouped).map(([crewType, crewZones]) => (
-                  <div key={crewType} className="bg-white rounded-xl border border-slate-200 p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${CREW_COLORS[crewType] || CREW_COLORS.operations}`}>
-                        {crewType} crew
-                      </span>
-                      <span className="text-xs text-slate-400">
-                        {crewZones.reduce((s, z) => s + z.ticket_ids.length, 0)} tickets · {crewZones.reduce((s, z) => s + (z.est_hours || 0), 0).toFixed(1)}h
-                      </span>
-                    </div>
-                    <div className="space-y-2">
-                      {crewZones.map((zone) => (
-                        <button
-                          key={zone.id}
-                          onClick={() => setSelected(zone)}
-                          className="w-full text-left flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 border border-slate-100 hover:bg-slate-100 transition-colors"
+
+                {/* Tickets list */}
+                <div className="divide-y divide-slate-100">
+                  {tickets.map((ticket, idx) => (
+                    <div key={ticket.id} className="px-6 py-4 hover:bg-slate-50 transition-colors">
+                      <div className="flex items-start gap-4">
+                        <div className="flex-shrink-0">
+                          <span className="text-xs font-semibold text-slate-400">
+                            {idx + 1}.
+                          </span>
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`inline-flex items-center justify-center h-6 w-10 rounded text-xs font-bold ${urgencyColor(ticket.urgency_score)}`}>
+                              P{ticket.urgency_score ? Math.round(ticket.urgency_score) : '?'}
+                            </span>
+                            <h3 className="text-sm font-medium text-slate-900 truncate">
+                              {ticket.subcategory_name || ticket.issue_type || 'Unclassified'}
+                            </h3>
+                          </div>
+                          <p className="text-xs text-slate-500 truncate">
+                            📍 {ticket.address || 'No address'}
+                          </p>
+                        </div>
+
+                        <Link
+                          to="/officer/dashboard"
+                          className="flex-shrink-0 text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
                         >
-                          <span className="text-sm text-slate-700">
-                            Zone ({zone.zone_lat}, {zone.zone_lng})
-                          </span>
-                          <span className="text-xs text-slate-400">
-                            {zone.ticket_ids.length} ticket(s) · {zone.est_hours?.toFixed(1)}h →
-                          </span>
-                        </button>
-                      ))}
+                          View →
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                ))
-              )}
-            </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
